@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- Existing upload continuation metadata: POST `/api/build/:app/:platform/testflight/upload/:file/operations`, `buildUploadFileOperations` and `worker/src/upload-operations.ts`. Requires HTTPS, app token, owned uploading record/version/build and Apple AWAITING_UPLOAD/size. Validates sorted-copy range coverage but preserves returned order. Signed URLs/header values are returned only to the authorized uploader, no-store and memory-only; this retrieval makes no writes/reservations/commit. The client sorts validated operations before byte writes and commits the same file.
+
 - Read-only upload diagnosis: `buildUploadFileStatus` in `worker/src/routes/build.ts`, `sanitiseUploadFile` in `worker/src/upload-diagnostic.ts`; GET `/api/build/:app/:platform/testflight/upload/:file/status` scopes app build token and existing upload ownership. Reads Apple metadata, exposes bounded state/method/offset/length/type/coverage plus host/header names only, and skips token rewrite and credential rewrap. It never resumes, reserves or commits an upload.
 
 - Verified workflow reservation associations are in migration0017 and the reservation/status helpers in `worker/src/github.ts` and `testflight.ts`. Optional runId/runAttempt metadata is checked against GitHub before allocation; same-attempt retries reuse the pair. Unknown upload receipt is null and the console must never label that as absent. Bodyless reservation clients remain valid.
