@@ -1,0 +1,204 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AppRow, TestflightBuildRow } from "../src/db.js";
+import { loadBuildStatus } from "../src/github.js";
+import { clearDb, fakeFetch, jsonRes, testDeps, testEnv } from "./helpers.js";
+
+const token = "private-test-token";
+const app = { id: "app", developerId: "developer", repo: "o/app", platform: "ios" } as AppRow;
+const release = { id: 1, name: "release", path: ".github/workflows/release.yml", state: "active" };
+const manual = { id: 2, name: "apple-platform-testflight", path: ".github/workflows/apple-testflight.yml", state: "active" };
+const run = (overrides = {}) => ({ id: 101, workflow_id: 1, run_number: 7, run_attempt: 1, name: "release", html_url: "https://github.com/o/app/actions/runs/101", event: "repository_dispatch", status: "in_progress", conclusion: null, created_at: "2026-10-16T09:58:00Z", run_started_at: "2026-10-16T09:59:00Z", ...overrides });
+const prefix = "GET api.github.com/repos/o/app/actions/";
+function routes(runs = [run()], workflows = [release]) {
+  return {
+    [`${prefix}workflows`]: () => jsonRes({ workflows }),
+    [`${prefix}workflows/1/runs`]: () => jsonRes({ workflow_runs: runs }),
+    [`${prefix}workflows/2/runs`]: () => jsonRes({ workflow_runs: [] }),
+  };
+}
+
+let entries: Map<string, Response>;
+let cache: { match: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn> };
+
+beforeEach(async () => {
+  await clearDb(testEnv());
+  entries = new Map();
+  cache = {
+    match: vi.fn(async (key: string) => entries.get(key)?.clone()),
+    put: vi.fn(async (key: string, response: Response) => { entries.set(key, response.clone()); }),
+  };
+  vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+});
+
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+describe("GitHub build status", () => {
+  it.each([
+    ["queued", null, "pending"], ["requested", null, "pending"], ["waiting", null, "pending"], ["pending", null, "pending"],
+    ["in_progress", null, "running"], ["completed", "success", "complete"], ["completed", "failure", "failed"],
+    ["completed", "timed_out", "failed"], ["completed", "cancelled", "cancelled"], ["completed", "skipped", "failed"],
+    ["completed", null, "unavailable"], ["future-state", null, "unavailable"],
+  ])("maps %s/%s to %s", async (status, conclusion, state) => {
+    const github = fakeFetch(routes([run({ status, conclusion })]));
+    const result = await loadBuildStatus(testEnv(), testDeps(github.fetch), app, token, []);
+    expect(result.state).toBe(state);
+    expect(result.workflowName).toBe("release");
+    expect(result.platformVerified).toBe(false);
+    expect(result.expectedSeconds).toBeNull();
+    expect(result.progressPercent).toBe(state === "complete" ? 100 : null);
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(github.calls.every((call) => call.headers.get("Authorization") === `Bearer ${token}`)).toBe(true);
+  });
+
+  it("ignores unrelated workflows and old runs after a new request", async () => {
+    const github = fakeFetch(routes([run({ created_at: "2026-10-15T10:00:00Z", status: "completed", conclusion: "success" }), run({ workflow_id: 99 })], [release, { ...release, id: 99, path: ".github/workflows/ci.yml" }]));
+    const status = await loadBuildStatus(testEnv(), testDeps(github.fetch), { ...app, buildRequestedAt: "2026-10-16T09:59:00Z" }, token, []);
+    expect(status).toMatchObject({ state: "requested", reason: "awaiting-workflow", runId: null });
+    expect(github.calls).toHaveLength(2);
+  });
+
+  it("prefers an active dispatch after the request, without claiming exact correlation", async () => {
+    const github = fakeFetch(routes([
+      run({ id: 104, created_at: "2026-10-16T10:02:00Z", status: "completed", conclusion: "failure" }),
+      run({ id: 103, created_at: "2026-10-16T10:01:00Z", event: "workflow_dispatch" }),
+      run({ id: 102, created_at: "2026-10-16T10:00:00Z", status: "queued" }),
+    ]));
+    const status = await loadBuildStatus(testEnv(), testDeps(github.fetch), { ...app, platform: "tvos", buildRequestedAt: "2026-10-16T10:00:00.123Z" }, token, []);
+    expect(status).toMatchObject({ state: "pending", runId: 102, correlation: "request-time", platformVerified: false });
+    expect(status.message).toContain("does not expose dispatch app or platform");
+  });
+
+  it.each([null, "2026-10-16T09:57:00Z"])("uses the uploaded iOS run number rather than the run identifier after request %s", async (buildRequestedAt) => {
+    const github = fakeFetch(routes([
+      run({ id: 900, run_number: 8, status: "completed", conclusion: "failure" }),
+      run({ id: 901, run_number: 7, status: "completed", conclusion: "success" }),
+    ]));
+    const builds = [{ buildNumber: "7", createdAt: "2026-10-16T10:00:00Z" }] as TestflightBuildRow[];
+    const status = await loadBuildStatus(testEnv(), testDeps(github.fetch), { ...app, buildRequestedAt }, token, builds);
+    expect(status).toMatchObject({ state: "complete", runId: 901, runNumber: 7, correlation: "build-number", platformVerified: false });
+  });
+
+  it("does not correlate a manual Apple build number with its run number", async () => {
+    const github = fakeFetch({ ...routes([], [manual]), [`${prefix}workflows/2/runs`]: () => jsonRes({ workflow_runs: [run({ workflow_id: 2, status: "completed", conclusion: "success" })] }) });
+    const builds = [{ buildNumber: "7", createdAt: "2026-10-16T10:00:00Z" }] as TestflightBuildRow[];
+    const status = await loadBuildStatus(testEnv(), testDeps(github.fetch), { ...app, platform: "macos" }, token, builds);
+    expect(status).toMatchObject({ state: "complete", workflowName: "apple-platform-testflight", correlation: "workflow-only", platformVerified: false });
+  });
+
+  it("estimates from job completion times of up to five successes in the same workflow", async () => {
+    const history = [120, 180, 240, 300, 360, 999].map((seconds, index) => run({ id: 200 + index, status: "completed", conclusion: "success", created_at: `2026-10-${15 - index}T09:59:00Z`, run_started_at: "2026-10-10T09:00:00Z", updated_at: "2026-10-16T09:59:00Z", seconds }));
+    const stubs = routes([run(), ...history]);
+    for (const [index, sample] of history.entries()) Object.assign(stubs, { [`${prefix}runs/${sample.id}/attempts/1/jobs`]: () => jsonRes({ total_count: 1, jobs: [{ completed_at: new Date(Date.parse(sample.run_started_at!) + [120, 180, 240, 300, 360, 999][index]! * 1000).toISOString() }] }) });
+    const github = fakeFetch(stubs);
+    const deps = testDeps(github.fetch);
+    const status = await loadBuildStatus(testEnv(), deps, app, token, []);
+    expect(status).toMatchObject({ state: "running", elapsedSeconds: 60, expectedSeconds: 240, estimateSampleCount: 5, estimateSource: "median-successful-job-completion", progressPercent: 25 });
+    expect(github.calls.filter((call) => call.url.includes("/jobs?"))).toHaveLength(5);
+    deps.advance(10000);
+    const cached = await loadBuildStatus(testEnv(), deps, app, token, []);
+    expect(cached.elapsedSeconds).toBe(70);
+    expect(github.calls).toHaveLength(7);
+    deps.advance(300000);
+    expect((await loadBuildStatus(testEnv(), deps, app, token, [])).progressPercent).toBe(99);
+    expect(github.calls.filter((call) => call.url.includes("/jobs?"))).toHaveLength(5);
+    expect(github.calls).toHaveLength(9);
+    deps.advance(600000);
+    await loadBuildStatus(testEnv(), deps, app, token, []);
+    expect(github.calls.filter((call) => call.url.includes("/jobs?"))).toHaveLength(10);
+  });
+
+  it("leaves the estimate unknown when historical job times cannot be read", async () => {
+    const github = fakeFetch(routes([run(), run({ id: 99, status: "completed", conclusion: "success" })]));
+    expect(await loadBuildStatus(testEnv(), testDeps(github.fetch), app, token, [])).toMatchObject({ state: "running", expectedSeconds: null, estimateSampleCount: 0, progressPercent: null });
+  });
+
+  it.each([401, 403, 404, 500])("reports GitHub %s without exposing its response", async (code) => {
+    const github = fakeFetch({ [`${prefix}workflows`]: () => new Response(token, { status: code }) });
+    const status = await loadBuildStatus(testEnv(), testDeps(github.fetch), app, token, []);
+    expect(status.state).toBe("unavailable");
+    if (code < 500) expect(status.message).toContain("Actions: read");
+    expect(JSON.stringify(status)).not.toContain(token);
+  });
+
+  it("handles fetch exceptions without exposing exception text", async () => {
+    const deps = testDeps(async () => { throw new Error(token); });
+    expect(await loadBuildStatus(testEnv(), deps, app, token, [])).toMatchObject({ state: "unavailable", reason: "fetch-failed", message: "GitHub build status could not be read. Retry shortly." });
+  });
+
+  it("times out a stalled GitHub request and aborts it", async () => {
+    let signal: AbortSignal | null | undefined;
+    const deps = testDeps(async (_input, init) => {
+      signal = init?.signal;
+      return new Promise<Response>(() => {});
+    });
+    expect(await loadBuildStatus(testEnv(), deps, app, token, [])).toMatchObject({ state: "unavailable", reason: "timeout" });
+    expect(signal?.aborted).toBe(true);
+  }, 10000);
+
+  it("reports missing workflows, missing tokens, dispatch failure and no runs honestly", async () => {
+    const env = testEnv();
+    const deps = testDeps(fakeFetch(routes([], [])).fetch);
+    expect((await loadBuildStatus(env, deps, app, undefined, [])).reason).toBe("token-missing");
+    expect(await loadBuildStatus(env, deps, { ...app, buildRequestError: token }, token, [])).toMatchObject({ state: "failed", reason: "dispatch-failed" });
+    expect(await loadBuildStatus(env, deps, app, token, [])).toMatchObject({ state: "unavailable", reason: "workflow-missing" });
+    expect(await loadBuildStatus(env, testDeps(fakeFetch(routes([])).fetch), { ...app, id: "empty" }, token, [])).toMatchObject({ state: "not-started", runId: null });
+  });
+
+  it("isolates cache entries and invalidates them for requests and credential changes", async () => {
+    const github = fakeFetch(routes());
+    const deps = testDeps(github.fetch);
+    const env = testEnv();
+    await loadBuildStatus(env, deps, app, token, [], "revision1");
+    await loadBuildStatus(env, deps, app, token, [], "revision1");
+    expect(github.calls).toHaveLength(2);
+    for (const changed of [{ ...app, developerId: "other" }, { ...app, platform: "tvos" as const }, { ...app, buildRequestedAt: deps.now().toISOString() }]) await loadBuildStatus(env, deps, changed, token, [], "revision1");
+    await loadBuildStatus(env, deps, app, token, [], "revision2");
+    expect(github.calls).toHaveLength(10);
+    expect(entries.size).toBe(5);
+    for (const [key, response] of entries) {
+      expect(key).not.toContain(token);
+      expect(await response.clone().text()).not.toContain(token);
+      expect(response.headers.get("Cache-Control")).toBe("max-age=15");
+    }
+  });
+
+  it("refreshes status after 15 seconds without making key-value writes", async () => {
+    const env = testEnv();
+    const put = vi.spyOn(env.WEBAPP_FILES, "put");
+    const github = fakeFetch(routes());
+    const deps = testDeps(github.fetch);
+    await loadBuildStatus(env, deps, app, token, []);
+    deps.advance(14999);
+    await loadBuildStatus(env, deps, app, token, []);
+    expect(github.calls).toHaveLength(2);
+    deps.advance(1);
+    await loadBuildStatus(env, deps, app, token, []);
+    expect(github.calls).toHaveLength(4);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it.each(["open", "match", "put"])("returns status when cache %s fails", async (operation) => {
+    if (operation === "open") vi.mocked(caches.open).mockRejectedValue(new Error("cache unavailable"));
+    else cache[operation as "match" | "put"].mockRejectedValue(new Error("cache unavailable"));
+    const github = fakeFetch(routes());
+    expect(await loadBuildStatus(testEnv(), testDeps(github.fetch), app, token, [])).toMatchObject({ state: "running", runId: 101 });
+    expect(github.calls).toHaveLength(2);
+  });
+
+  it("does not let cached successful status mask a credential revision with denied access", async () => {
+    const github = fakeFetch(routes());
+    const deps = testDeps(github.fetch);
+    const env = testEnv();
+    await loadBuildStatus(env, deps, app, token, [], "revision1");
+    const denied = fakeFetch({ [`${prefix}workflows`]: () => new Response("private error", { status: 403 }) });
+    const restricted = { ...deps, fetch: denied.fetch };
+    const status = await loadBuildStatus(env, restricted, app, token, [], "revision2");
+    expect(status).toMatchObject({ state: "unavailable", reason: "actions-access" });
+    expect(status.message).toContain("Actions: read");
+    expect(await loadBuildStatus(env, restricted, app, token, [], "revision2")).toEqual(status);
+    expect(denied.calls).toHaveLength(1);
+    deps.advance(15000);
+    await loadBuildStatus(env, restricted, app, token, [], "revision2");
+    expect(denied.calls).toHaveLength(2);
+  });
+});
