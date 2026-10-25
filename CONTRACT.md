@@ -227,6 +227,8 @@ app's page in ourapps shows each step and what it waits for.
 
 ## 5. Releases and fresh builds
 
+The console reads workflow runs from `release.yml` and `apple-testflight.yml` using the developer's GitHub token with Actions read permission. Its build-status panel distinguishes request, queue, running, successful completion, failure and cancellation. Time-based progress estimates use successful run/job timings. Run matching is approximate because the GitHub run listing does not expose app/platform dispatch inputs; workflow success is separate from Apple processing and TestFlight readiness.
+
 The release carries `my-app.json` with `install.ios` set to
 `{ "bundleId": "<bundle id>", "testflight": "<.testflight.url from step 3, or https://testflight.apple.com when null>" }`;
 ourapps shows its own invitation link in its place. The `.ipa` is not a release asset.

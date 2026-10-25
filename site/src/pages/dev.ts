@@ -4,6 +4,7 @@ import { html, raw, type Raw } from "../html.js";
 import { navigate } from "../nav.js";
 import { qrSvg, shareOrCopy } from "../qr.js";
 import { signingRequest } from "../signing.js";
+import { buildStatusCard, watchBuildStatus } from "../buildStatus.js";
 import { appIcon, callout, copyRow, copyText, emptyState, errorBox, fmtDate, icon, pill, statePill, toast, wireCopy, wireImages } from "../ui.js";
 import { AGENT_REPO_PROMPT, AGENT_STORE_PROMPT } from "./prompts.js";
 import { SOURCE_URL } from "./public.js";
@@ -376,6 +377,7 @@ function testflightCard(me: Me, app: DevApp, t: TestflightStatus, checking: bool
         ${status}
         ${t.setUp ? html`<button class="btn sm secondary" type="button" id="testflight-check">${checking ? "Checking..." : "Check with Apple"}</button>` : ""}
       </div>
+      <div data-github-status>${buildStatusCard(t.buildStatus)}</div>
       ${t.setUp ? testflightProgress(app, t, stage!) : testflightSteps(me, app, t, checking)}
       <div id="testflight-result"></div>
     </div>`;
@@ -695,6 +697,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   }
 
   render();
+  watchBuildStatus(box, path);
   if (location.hash === "#testflight") box.scrollIntoView();
   addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onFocus);
@@ -720,7 +723,7 @@ export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", 
     <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
     ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
     ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
-    ${buildTable(t)}<div data-platform-error></div></div>`;
+    <div data-github-status>${buildStatusCard(t.buildStatus)}</div>${buildTable(t)}<div data-platform-error></div></div>`;
 }
 
 async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platform: "macos" | "tvos"): Promise<void> {
@@ -750,7 +753,7 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
     const type = box.querySelector<HTMLButtonElement>("[data-platform-type]");
     if (type) type.onclick = () => void act(type, "", true);
   };
-  try { render(await api<TestflightStatus>("GET", path)); }
+  try { render(await api<TestflightStatus>("GET", path)); watchBuildStatus(box, path); }
   catch (err) { box.innerHTML = errorBox(err).html; }
 }
 
@@ -1049,7 +1052,7 @@ export async function settings(root: HTMLElement, note = "", signingNote?: { res
           <div class="about"><h3>GitHub token</h3><p>Lets the console read release assets from private repositories and ask them for fresh builds. <a href="/dev/guide#github-token">How to create one</a>.</p></div>
           <div>
             <div class="row wrap mb">${savedMarker(me.secrets.github, me.secrets.githubSavedAt, "githubToken")}</div>
-            <div class="field"><label>Fine-grained token</label><input type="text" name="githubToken" autocomplete="off" placeholder="${me.secrets.github ? "saved; paste a new one to replace" : "github_pat_..."}" /><div class="hint">Permissions: Contents, read and write, on the app repositories only.</div></div>
+            <div class="field"><label>Fine-grained token</label><input type="text" name="githubToken" autocomplete="off" placeholder="${me.secrets.github ? "saved; paste a new one to replace" : "github_pat_..."}" /><div class="hint">Permissions on the app repositories: Contents, read and write, for releases and build requests; Actions, read, for workflow status and timing.</div></div>
           </div>
         </div>
 

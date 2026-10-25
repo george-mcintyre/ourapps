@@ -95,6 +95,24 @@ async function readyApp(routes: ReturnType<typeof storeRoutes>) {
 }
 
 describe("TestFlight", () => {
+  it("returns workflow status on both default and explicit platform views", async () => {
+    const routes = storeRoutes({ storeApp: false });
+    const { appId } = await readyApp(routes);
+    const github = fakeFetch({ ...routes,
+      "GET api.github.com/repos/o/skull/actions/workflows": () => jsonRes({ workflows: [{ id: 11, name: "release", path: ".github/workflows/release.yml", state: "active" }] }),
+      "GET api.github.com/repos/o/skull/actions/workflows/11/runs": () => jsonRes({ workflow_runs: [{ id: 123, workflow_id: 11, run_number: 9, run_attempt: 1, status: "in_progress", conclusion: null, event: "repository_dispatch", created_at: "2026-10-16T09:58:00Z", run_started_at: "2026-10-16T09:59:00Z", html_url: "https://github.com/o/skull/actions/runs/123" }] }),
+    });
+    const d = { ...deps, fetch: github.fetch };
+    for (const suffix of ["", "/ios", "/macos", "/tvos"]) {
+      const response = await handle(api(cookie, "GET", `/api/dev/apps/${appId}/testflight${suffix}`), env, d);
+      expect(response.status).toBe(200);
+      const view = await response.json();
+      expect(view).toMatchObject({ platform: suffix.slice(1) || "ios", buildStatus: { state: "running", workflowName: "release", runId: 123, elapsedSeconds: 60, expectedSeconds: null, progressPercent: null, platformVerified: false } });
+      expect(JSON.stringify(view)).not.toContain("ghp_");
+    }
+    expect(github.calls.filter((call) => call.url.includes("/actions/workflows?"))).toHaveLength(3);
+  });
+
   it("names the developer's next step, and what to type into App Store Connect", async () => {
     type View = { setUp: boolean; needs: string | null; storeApp: { name: string; otherName: string; bundleId: string; sku: string } | null };
     const routes = storeRoutes({ storeApp: false });
@@ -123,7 +141,10 @@ describe("TestFlight", () => {
     const state: Store = { storeApp: true };
     const routes = storeRoutes(state);
     const { appId, buildToken, linkId } = await readyApp(routes);
-    const { fetch, calls } = fakeFetch({ ...githubRoutes(), ...routes, "GET api.github.com/repos/o/skull/releases/assets/1": () => jsonRes({ ...manifest, install: { ...manifest.install, ios: { bundleId: "com.example.skull", testflight: "https://testflight.apple.com/join/OLD" } } }) });
+    const { fetch, calls } = fakeFetch({ ...githubRoutes(), ...routes,
+      "GET api.github.com/repos/o/skull/actions/workflows": () => new Response("Actions access denied", { status: 403 }),
+      "GET api.github.com/repos/o/skull/releases/assets/1": () => jsonRes({ ...manifest, install: { ...manifest.install, ios: { bundleId: "com.example.skull", testflight: "https://testflight.apple.com/join/OLD" } } }),
+    });
     const d = { ...deps, fetch };
     await handle(api(cookie, "PUT", "/api/dev/review-contact", { firstName: "George", lastName: "McIntyre", email: "g@example.com", phone: "+44 7700 900123" }), env, d);
     const view = async () => (await (await handle(api(cookie, "GET", `/api/dev/apps/${appId}/testflight`), env, d)).json()) as View;
@@ -133,7 +154,8 @@ describe("TestFlight", () => {
     // Set-up makes the profile, the group and its link, then asks the repository for the first build.
     const set = await handle(api(cookie, "POST", `/api/dev/apps/${appId}/testflight`), env, d);
     expect(set.status).toBe(200);
-    expect(await set.json()).toMatchObject({ setUp: true, needs: null, storeApp: null, stage: "waiting-for-upload", url: "https://testflight.apple.com/join/AbCd1234", invitation: { state: "not-accepting" }, buildRequest: { error: null }, profile: "Skull App Store", contact: true, builds: [] });
+    expect(await set.json()).toMatchObject({ setUp: true, needs: null, storeApp: null, stage: "waiting-for-upload", url: "https://testflight.apple.com/join/AbCd1234", invitation: { state: "not-accepting" }, buildRequest: { error: null }, buildStatus: { state: "unavailable", reason: "actions-access" }, profile: "Skull App Store", contact: true, builds: [] });
+    expect(await view()).toMatchObject({ buildStatus: { state: "unavailable", reason: "actions-access" } });
     const storeProfile = JSON.parse(calls.filter((c) => c.method === "POST" && c.url.endsWith("/v1/profiles")).at(-1)!.body!).data;
     expect(storeProfile.attributes).toEqual({ name: "Skull App Store", profileType: "IOS_APP_STORE" });
     const review = JSON.parse(calls.find((c) => c.method === "PATCH" && c.url.endsWith("/v1/betaAppReviewDetails/rev-1"))!.body!).data.attributes;

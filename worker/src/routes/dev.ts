@@ -4,7 +4,8 @@ import { audit } from "../audit.js";
 import { RESERVED_SLUGS, apiKeyHash, clearSessionCookie, masterKeys, newApiKey, normaliseSlug, requireSession, type AuthedDeveloper } from "../auth.js";
 import { randomId, tokenHash, validateAppleKey, validateSigningKey } from "../crypto.js";
 import { Db, type ApiKeyRow, type AppRow, type Developer, type DeveloperSecrets, type KeyScope, type LinkRow, type SigningCertificateRow } from "../db.js";
-import type { Deps, Env } from "../env.js";
+import { defaultDeps, type Deps, type Env } from "../env.js";
+import { loadBuildStatus } from "../github.js";
 import { appleClient, dlUrl } from "../flow.js";
 import { HttpError, httpsUrlOrEmpty, json, readJson, text } from "../http.js";
 import { EDITABLE_SECRET_FIELDS, appleReady, loadSecrets, saveSecrets, secretsSummary } from "../secrets.js";
@@ -372,15 +373,18 @@ export async function revokeLink(env: Env, deps: Deps, dev: Developer, id: strin
 // Before set-up, "needs" names the developer's next step; null with setUp false means ourapps can go
 // ahead (POST) and find out whether the app is in App Store Connect yet. After set-up, "stage" says
 // what the invitation waits for.
-export async function testflightStatus(env: Env, dev: Developer, id: string, platformName = "ios"): Promise<Response> {
+export async function testflightStatus(env: Env, dev: Developer, id: string, platformName = "ios", deps: Deps = defaultDeps): Promise<Response> {
   const db = Db.from(env);
   const app = await db.platformApp(await ownedApp(db, dev, id), applePlatform(platformName));
-  return json(await testflightView(db, app, dev, app.ascAppId ? null : await localNeed(env, dev, app)));
+  return json(await testflightView(env, deps, db, app, dev, app.ascAppId ? null : await localNeed(env, dev, app)));
 }
 
-async function testflightView(db: Db, app: AppRow, dev: Developer, needs: TestflightNeed | null) {
+async function testflightView(env: Env, deps: Deps, db: Db, app: AppRow, dev: Developer, needs: TestflightNeed | null) {
   const builds = await db.testflightBuilds(app.id, 6, app.platform ?? "ios");
+  const secrets = await loadSecrets(env, dev.id, ["githubToken"]);
+  const buildStatus = await loadBuildStatus(env, deps, app, secrets.githubToken, builds, secrets.savedAt?.githubToken);
   return {
+    buildStatus,
     platform: app.platform ?? "ios",
     profileType: profileType(app.platform ?? "ios", app.nativeMac),
     setUp: Boolean(app.ascAppId),
@@ -432,7 +436,7 @@ export async function setUpAppTestflight(request: Request, env: Env, deps: Deps,
       throw new HttpError(502, err instanceof Error ? err.message : String(err));
     }
   }
-  return json(await testflightView(db, app, dev, needs));
+  return json(await testflightView(env, deps, db, app, dev, needs));
 }
 
 // POST /api/dev/apps/:id/testflight/build - asks the app's repository for a release now.
@@ -441,7 +445,7 @@ export async function requestAppBuild(env: Env, deps: Deps, dev: Developer, id: 
   const app = await db.platformApp(await ownedApp(db, dev, id), applePlatform(platformName));
   if (!app.ascAppId) throw new HttpError(409, "set up TestFlight for this app first");
   await requestBuild(env, deps, app, "requested");
-  return json(await testflightView(db, app, dev, null));
+  return json(await testflightView(env, deps, db, app, dev, null));
 }
 
 async function optionalJson<T extends object>(request: Request): Promise<Partial<T>> {

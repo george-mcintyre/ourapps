@@ -20,7 +20,7 @@ function sections(origin: string, slug: string): Section[] {
         <h3>You, once per account</h3>
         <ol class="steps">
           <li><b>Sign in with GitHub</b> at <a href="/dev">/dev</a>. An agent cannot do this; it is your identity.</li>
-          <li><b>Create a GitHub fine-grained token</b> (Contents, read and write, on your app repositories) and paste it under <a href="/dev/settings#credentials">Settings</a>. Tokens are created on GitHub while signed in as you. <a href="/dev/guide#github-token">Steps</a>.</li>
+          <li><b>Create a GitHub fine-grained token</b> (Contents, read and write, and Actions, read, on your app repositories) and paste it under <a href="/dev/settings#credentials">Settings</a>. Tokens are created on GitHub while signed in as you. <a href="/dev/guide#github-token">Steps</a>.</li>
           <li><b>Apple TestFlight apps: pay for the Apple Developer Program</b> (99 US dollars a year), then create an <b>App Store Connect API key</b> with the Admin role and paste issuer id, key id and the .p8 contents under Settings, plus your team id. Saving it sets up Apple Distribution signing. <a href="/dev/guide#apple-key">Steps</a>.</li>
           <li><b>Web apps only: create a free Cloudflare account</b> and a token that lets your workflows deploy to it. Your web apps then run from your account, free and without a request limit. <a href="/dev/guide#cloudflare">Steps</a>.</li>
           <li><b>Create one API key</b> on <a href="/dev/agents">Agents and API</a> and store it where your agent runs. Keys are made from a browser session only; agents cannot mint their own.</li>
@@ -99,7 +99,7 @@ function sections(origin: string, slug: string): Section[] {
           <li>On GitHub, open your avatar, ${kbd("Settings")}, ${kbd("Developer settings")}, ${kbd("Personal access tokens")}, ${kbd("Fine-grained tokens")}, ${kbd("Generate new token")}.</li>
           <li>Name it <b>ourapps</b>. Expiration: pick the longest you are comfortable with (one year) and put a reminder in your calendar.</li>
           <li><b>Repository access:</b> "Only select repositories", then pick the app repositories.</li>
-          <li><b>Permissions, Repository permissions:</b> set <b>Contents</b> to <b>Read and write</b>. Metadata is added automatically. Nothing else.</li>
+          <li><b>Permissions, Repository permissions:</b> set <b>Contents</b> to <b>Read and write</b> for reading releases and requesting builds, and <b>Actions</b> to <b>Read</b> for build status and timing. Metadata is added automatically.</li>
           <li>Generate, copy the token (it starts with <code>github_pat_</code>), paste it into <a href="/dev/settings#credentials">Settings</a> and save. The console confirms "saved" with the date.</li>
         </ol>
         ${callout("info", html`<p>When you add a new app repository later, edit the token on GitHub and add the repository to it. The console does not need a new token.</p>`)}
@@ -301,6 +301,7 @@ startButton.onclick = async () => {
         </ol>
         <p>The invitation is a public link: anyone who has it can join, with no invitation per person. Apple's page for it refuses testers until a build has passed beta review, so the install page offers it only once ourapps has found that page open; until then friends on iPhone see "coming soon", with the web version when there is one.</p>
         <h3>Every release</h3>
+        <p>The <b>GitHub build</b> panel shows Requested, Pending, Running or Complete, with Failed and Cancelled outcomes. Running progress is a time-based estimate from up to five successful runs of the same workflow, using their job completion times. It stays below 100% until GitHub reports success. The run link opens the actual GitHub log. Matching by request time or build number is approximate: GitHub's run listing does not expose dispatch app/platform inputs. Workflow Complete is separate from Apple processing, beta review and TestFlight availability.</p>
         <table class="table">
           <tr><th>State on the app page</th><th>Meaning</th></tr>
           <tr><td>uploading</td><td>The workflow is sending the build to Apple through ourapps</td></tr>
@@ -436,7 +437,7 @@ suspend fun checkForUpdate(context: Context) {
         <table class="table">
           <tr><th>What</th><th>How it is stored</th><th>When it is decrypted</th></tr>
           <tr><td>App Store Connect key (issuer id, key id, .p8), Apple team id</td><td>AES-256-GCM, one ciphertext per field, under a key derived for your account alone (HKDF from the master secret), with your account id and the field name bound in as authenticated data so a ciphertext cannot be moved between accounts or fields</td><td>Only inside one request or scheduled check: setting up signing or TestFlight, a workflow's upload, and the ten-minute check that looks after TestFlight builds</td></tr>
-          <tr><td>GitHub token</td><td>Same scheme</td><td>Only when reading a release or asking the repository for a fresh build</td></tr>
+          <tr><td>GitHub token</td><td>Same scheme</td><td>Only when reading a release or workflow status, or asking the repository for a fresh build</td></tr>
           <tr><td>Apple Distribution and Mac Installer Distribution private keys</td><td>Same scheme; the app signing key is made in your browser and the installer key during Mac setup on the server</td><td>Only when an app's release workflow presents that app's build token; the installer key is returned only for Mac builds</td></tr>
           <tr><td>API keys, build tokens, sign-in sessions</td><td>Keyed hashes (HMAC-SHA256 with a pepper derived from the master secret); the key itself is shown to you once and never stored</td><td>Never; a presented key is hashed and compared</td></tr>
           <tr><td>Download links for app files</td><td>Signed with their own secret; expire after one hour</td><td>n/a</td></tr>
@@ -474,7 +475,7 @@ suspend fun checkForUpdate(context: Context) {
         <h3 id="security-you">What is yours to do</h3>
         <ul class="bullets">
           <li>Protect your GitHub account and your Apple account with two-factor sign-in; this service can only be as safe as the sign-in in front of it.</li>
-          <li>Give the GitHub token the narrowest scope: Contents on the app repositories only, with an expiry.</li>
+          <li>Give the GitHub token Contents read and write and Actions read on the app repositories only, with an expiry.</li>
           <li>Create one API key per agent or machine, with an expiry, and revoke it when the job is done.</li>
           <li>Keep build tokens and the Cloudflare token in repository secrets only. A build token lets its holder fetch your iPhone signing key; a Cloudflare token can replace any Worker on its account.</li>
           <li>Check Settings, Security now and then. Anything you do not recognise: sign out everywhere, revoke keys, and replace the GitHub token and Apple key at their sources.</li>

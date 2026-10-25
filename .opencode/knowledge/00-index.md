@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- GitHub build status: `loadBuildStatus` in `worker/src/github.ts`, exposed as `buildStatus` by TestFlight views; `site/src/buildStatus.ts` renders and refreshes it every visible 30 seconds. Requires Actions read on the developer token, separately from Contents write for dispatch. Named Workers Cache API `ourapps-build-status` caches sanitized state for 15 seconds and successful historical durations for 15 minutes, scoped by developer/app/platform/repo/credential revision. Request/build-number matching is approximate; workflow Complete is not Apple readiness.
+
 - iPhone/iPad compatibility on Apple-silicon Mac is separate from Catalyst/native Mac. `release.apple.iosOnMac` and `/latest.apple.iosOnMac` require iOS readiness plus Apple's beta-group permission flag; `apps.ios_on_mac` and `ios_on_mac_checked_at` cache that flag for one minute (migration 0015). `site/src/desktop.ts` labels the compatibility invitation explicitly. No Intel claim or `macos` readiness fallback.
 
 - Apple platform routing: `worker/src/apple-platform.ts` validates `ios`, `macos`, `tvos`; explicit `/api/build/:app/:platform/signing` and `/testflight/{upload,commit}`. Legacy build routes are iOS-only aliases. `worker/migrations/0014_apple_platforms.sql` stores separate platform state and installer certificates; Mac installer keys use the encrypted `installerSigningKey` field. Mac setup defaults to Catalyst (`MAC_CATALYST_APP_STORE`); native Mac is `MAC_APP_STORE`; TV is `TVOS_APP_STORE`. Console setup/status: `/api/dev/apps/:id/testflight/:platform`. Real signed export/upload and tester availability require platform-specific verification.

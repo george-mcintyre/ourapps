@@ -154,6 +154,7 @@ export interface TestflightBuild {
 }
 
 export interface TestflightStatus {
+  buildStatus?: BuildStatus;
   profileType?: "IOS_APP_STORE" | "MAC_CATALYST_APP_STORE" | "MAC_APP_STORE" | "TVOS_APP_STORE";
   setUp: boolean;
   // null with setUp false: ourapps can check with Apple whether the app is in App Store Connect yet.
@@ -168,6 +169,28 @@ export interface TestflightStatus {
   profile: string | null;
   contact: boolean;
   builds: TestflightBuild[];
+}
+
+export interface BuildStatus {
+  state: "not-started" | "requested" | "pending" | "running" | "complete" | "failed" | "cancelled" | "unavailable";
+  checkedAt: string;
+  requestedAt: string | null;
+  reason: string | null;
+  message: string | null;
+  workflowName: string | null;
+  runUrl: string | null;
+  runId: number | null;
+  runNumber: number | null;
+  runAttempt: number | null;
+  conclusion: string | null;
+  correlation: "none" | "request-time" | "build-number" | "workflow-only";
+  platformVerified: boolean;
+  startedAt: string | null;
+  elapsedSeconds: number | null;
+  expectedSeconds: number | null;
+  estimateSampleCount: number;
+  estimateSource: "median-successful-job-completion" | null;
+  progressPercent: number | null;
 }
 
 export interface ReleaseStatus {
