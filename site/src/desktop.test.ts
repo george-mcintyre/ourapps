@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopPackage } from "@my/store-shared";
 import type { Release, TestflightStatus } from "./api.js";
-import { desktopPanel, packageLabel, readyInvitation, televisionPanel } from "./desktop.js";
+import { desktopAvailability, desktopPanel, packageLabel, readyInvitation, televisionPanel } from "./desktop.js";
 import { platformTestflightCard } from "./pages/dev.js";
 import { availableViews, chooseView, shapeFor, showTabs } from "./views.js";
 
@@ -13,6 +13,13 @@ const release: Release = {
 };
 
 describe("desktop install choices", () => {
+  it("explains missing native packages on the matching computer without inventing downloads", () => {
+    const webOnly = { ...release, install: { ios: null, android: null, pwa: "https://example.com/" } };
+    expect(desktopAvailability(webOnly, "macos").html).toContain("No Mac installer or ready Mac TestFlight build");
+    expect(desktopAvailability(webOnly, "windows").html).toContain("No Windows installer is published");
+    expect(desktopAvailability(webOnly, "windows").html).not.toContain("href=");
+    expect(desktopAvailability(release, "macos").html).toBe("");
+  });
   it("keeps native and web selectable, with wide previews", () => {
     const views = availableViews(release.install, () => false);
     expect(views).toEqual(["macos", "tvos", "web"]);

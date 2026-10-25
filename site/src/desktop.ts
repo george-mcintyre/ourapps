@@ -4,6 +4,13 @@ import { html, type Raw } from "./html.js";
 
 export const APPLE_TESTING_DOCS = "https://testflight.apple.com/";
 
+export function desktopAvailability(release: Release, platform: "macos" | "windows"): Raw {
+  const target = release.install[platform];
+  if (target) return html``;
+  const name = platform === "macos" ? "Mac" : "Windows";
+  return html`<div class="install-card"><h3>${name} app unavailable</h3><p class="muted small">${platform === "macos" ? "No Mac installer or ready Mac TestFlight build is published for this app." : "No Windows installer is published for this app."}${release.install.pwa ? " You can use the web version below." : ""}</p></div>`;
+}
+
 export function readyInvitation(release: Release, platform: "macos" | "tvos"): { version: string; testflightUrl: string } | null {
   return release.apple?.[platform] ?? null;
 }

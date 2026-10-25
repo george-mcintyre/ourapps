@@ -3,7 +3,7 @@ import { ApiError, api, whoAmI, type AppDetails, type HistoryEntry, type Install
 import { html, mount, paragraphs, raw, type Raw } from "../html.js";
 import { navigate } from "../nav.js";
 import { notesHtml } from "../notes.js";
-import { desktopPanel, televisionPanel } from "../desktop.js";
+import { desktopAvailability, desktopPanel, televisionPanel } from "../desktop.js";
 import { screenshotSvg } from "../placeholders.js";
 import { appleDeviceName, detectInAppBrowser, detectPlatform, type InAppBrowser, type Platform } from "../platform.js";
 import { qrSvg, shareOrCopy } from "../qr.js";
@@ -181,7 +181,9 @@ export async function installPage(root: HTMLElement, linkId: string): Promise<vo
       const changed = next.release?.version !== data.release?.version
         || next.release?.testflightVersion !== data.release?.testflightVersion
         || next.release?.install.ios?.testflight !== data.release?.install.ios?.testflight
-        || JSON.stringify(next.release?.apple) !== JSON.stringify(data.release?.apple);
+        || JSON.stringify(next.release?.apple) !== JSON.stringify(data.release?.apple)
+        || next.release?.install.macos?.packages.length !== data.release?.install.macos?.packages.length
+        || next.release?.install.windows?.packages.length !== data.release?.install.windows?.packages.length;
       if (changed && marker.isConnected) {
         stop();
         const y = scrollY;
@@ -287,6 +289,7 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
           </div>
         </header>
         <div class="facts-strip">${facts}</div>
+        ${!blocked && data.release && (d.platform === "macos" || d.platform === "windows") ? desktopAvailability(data.release, d.platform) : ""}
         ${tabbed
           ? html`<div class="platform-tabs" role="tablist" aria-label="Versions of ${name}">${views.map((v) => html`<button type="button" role="tab" id="tab-${v}" aria-controls="panel-${v}" aria-selected="${v === current ? "true" : "false"}" tabindex="${v === current ? "0" : "-1"}" data-view="${v}">${icon(VIEW_ICON[v])} ${VIEW_LABEL[v]}</button>`)}</div>`
           : ""}
