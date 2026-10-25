@@ -1,6 +1,6 @@
 // Which install flow to show, from the user agent alone.
 
-export type Platform = "ios" | "android" | "other";
+export type Platform = "ios" | "android" | "macos" | "windows" | "other";
 
 export interface InAppBrowser {
   // Human name of the host app.
@@ -14,6 +14,8 @@ export function detectPlatform(userAgent: string, platformHint = "", maxTouchPoi
   // iPadOS 13+ reports as a Mac; touch points give it away.
   if (platformHint === "MacIntel" && maxTouchPoints > 1) return "ios";
   if (/Android/.test(userAgent)) return "android";
+  if (/Macintosh|Mac OS X/.test(userAgent)) return "macos";
+  if (/Windows NT/.test(userAgent)) return "windows";
   return "other";
 }
 

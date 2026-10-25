@@ -13,10 +13,15 @@ export async function dlUrl(env: Env, deps: Deps, link: Omit<LinkPayload, "exp">
   return `${env.PUBLIC_ORIGIN}/dl/${token}`;
 }
 
-// Replace the APK URL in a manifest with a signed worker link.
+// Downloadable packages use signed worker links.
 export async function signManifestLinks(env: Env, deps: Deps, developerId: string, manifest: AppManifest): Promise<AppManifest> {
   const out: AppManifest = structuredClone(manifest);
   if (out.install.android) out.install.android.apk = await dlUrl(env, deps, { url: manifest.install.android!.apk, kind: "apk", dev: developerId });
+  for (const platform of ["macos", "windows"] as const) {
+    const target = out.install[platform];
+    if (!target) continue;
+    for (const pkg of target.packages) pkg.url = await dlUrl(env, deps, { url: pkg.url, kind: pkg.format, dev: developerId });
+  }
   return out;
 }
 

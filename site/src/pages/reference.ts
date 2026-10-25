@@ -205,6 +205,7 @@ function body(): Raw {
         <a href="#where">Where everything runs</a>
         <a href="#ios">Native iPhone and iPad</a>
         <a href="#android">Native Android</a>
+        <a href="#desktop">Mac, Windows and Apple TV</a>
         <a href="#web">Web apps</a>
         <a href="#engines">Engines and frameworks</a>
         <a href="#backend">Your backend</a>
@@ -219,7 +220,9 @@ function body(): Raw {
             <tr><th>Kind</th><th>Examples</th><th>How it reaches people</th><th>Status</th></tr>
             <tr><td>Native iPhone and iPad</td><td>Swift, SwiftUI, UIKit, Objective-C</td><td>App Store-signed .ipa on TestFlight; friends install with Apple's TestFlight app</td><td><span class="pill ok">supported</span> 10,000 people per app; Apple's beta review</td></tr>
             <tr><td>Native Android</td><td>Kotlin, Java, Jetpack Compose</td><td>Signed universal .apk, direct download</td><td><span class="pill ok">supported</span> no device limit</td></tr>
-            <tr><td>Cross-platform native</td><td>Flutter, React Native and Expo, .NET MAUI, Kotlin Multiplatform, Capacitor, Cordova, Unity and Godot mobile builds</td><td>As the two above</td><td><span class="pill ok">supported</span></td></tr>
+            <tr><td>Mac and Windows</td><td>Native or wrapped desktop apps</td><td>Mac .dmg and Windows .exe downloads with named architecture choices</td><td><span class="pill ok">supported</span> system security policy applies</td></tr>
+            <tr><td>Mac and Apple TV TestFlight</td><td>macOS and tvOS builds</td><td>Separate platform setup, builds and ready invitations</td><td><span class="pill ok">supported</span> Apple's beta review</td></tr>
+            <tr><td>Cross-platform native</td><td>Flutter, React Native and Expo, .NET MAUI, Kotlin Multiplatform, Capacitor, Cordova, Unity and Godot mobile builds</td><td>As iPhone/iPad and Android above</td><td><span class="pill ok">supported</span></td></tr>
             <tr><td>Static web app or PWA</td><td>Vite with React, Vue, Svelte or Solid; Angular; Astro; Flutter web; Next.js static export</td><td>Deployed by your workflow to your own free Cloudflare account; the install page opens it</td><td><span class="pill ok">supported</span> 20,000 files, 25 MB per file</td></tr>
             <tr><td>Web games</td><td>Unity Web, Godot 4 web export, Phaser, PlayCanvas, Three.js, Babylon.js</td><td>Deployed to your Cloudflare account without pre-compression, with a _headers file</td><td><span class="pill warn">supported</span> phone performance varies</td></tr>
             <tr><td>Web app with its own server</td><td>Next.js with server rendering, Remix, Rails, Django, Laravel</td><td>Hosted by you; the install page links to it</td><td><span class="pill ok">supported as a link</span></td></tr>
@@ -228,11 +231,20 @@ function body(): Raw {
           <h3>Not supported</h3>
           <ul class="bullets">
             <li>Running server code, APIs or databases on ourapps. It distributes apps; it does not host their logic.</li>
-            <li>Desktop apps (macOS, Windows, Linux) and Apple Watch, Apple TV or Vision Pro apps. The install flow is for phones, tablets and browsers.</li>
+            <li>Native Linux, Apple Watch and Vision Pro install flows.</li>
             <li>Android App Bundles (.aab) as they are: phones cannot install them. Convert to a universal .apk (<a href="#android">how</a>).</li>
             <li>iPhone apps that skip Apple's beta review: every iPhone build reaches friends through TestFlight.</li>
             <li>Features that need App Store distribution, such as real in-app purchases.</li>
           </ul>
+        </section>
+
+        <section id="desktop">
+          <h2>Mac, Windows and Apple TV</h2>
+          <p><code>install.macos.packages</code> and <code>install.windows.packages</code> list release downloads. Each package declares its address, format (.dmg or .exe), architectures (<code>arm64</code>, <code>x64</code>), minimum system and signed or unsigned status. Mac packages also declare notarization. The page offers each package by name; it does not infer the Mac chip from the browser.</p>
+          <p>Mac: open the .dmg and drag the app to Applications. Quit and replace that app to update. Windows: run the .exe installer; run the new installer to update and use Installed apps to uninstall. System security checks apply to signed and unsigned apps. Windows Application Control may block an installed unsigned app.</p>
+          <p>Optional <code>install.macos.testflight</code> declares bundle identifier, minimum system and architectures; <code>install.tvos</code> declares bundle identifier and minimum system. These describe support, not readiness. The install page uses only the matching entry in <code>release.apple</code> for an invitation and its version, separate from the direct-package release version.</p>
+          <p>Separate Mac and Apple TV cards on the app page call <code>GET, POST /api/dev/apps/:id/testflight/:platform</code>. Setup does not require declaring a direct package. Add the platform to the app's existing App Store Connect record. Mac setup requires your browser session, provisions installer signing on the server, and offers native Mac or Mac Catalyst profile selection. Workflows fetch signing and upload using the platform-specific build addresses in <a href="/contract.md">the contract</a>.</p>
+          <p>For an Apple TV public invitation, install TestFlight on iPhone or iPad and Apple TV using the same App Store account. Accept the link on the iPhone or iPad, then install from TestFlight on Apple TV using the remote. <a href="https://testflight.apple.com/" target="_blank" rel="noopener">Apple's instructions and current system requirements</a>. Board and player modes are app behaviour, not manifest properties.</p>
         </section>
 
         <section id="where">

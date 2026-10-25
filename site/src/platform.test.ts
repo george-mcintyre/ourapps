@@ -16,12 +16,13 @@ describe("detectPlatform", () => {
     expect(detectPlatform(SAFARI_IOS)).toBe("ios");
     expect(detectPlatform("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)")).toBe("ios");
     expect(detectPlatform(MAC, "MacIntel", 5)).toBe("ios");
-    expect(detectPlatform(MAC, "MacIntel", 0)).toBe("other");
+    expect(detectPlatform(MAC, "MacIntel", 0)).toBe("macos");
   });
 
   it("finds Android and everything else", () => {
     expect(detectPlatform(CHROME_ANDROID)).toBe("android");
-    expect(detectPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("other");
+    expect(detectPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("windows");
+    expect(detectPlatform("Mozilla/5.0 (X11; Linux x86_64)")).toBe("other");
   });
 });
 

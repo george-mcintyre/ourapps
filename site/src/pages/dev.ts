@@ -177,7 +177,7 @@ const SECTIONS: { title: string; about: string; fields: Field[] }[] = [
     about: "Where the console reads releases from, and the bundle ID TestFlight needs for iPhone apps. The repository must follow the contract; the agent prompt sets it up for you.",
     fields: [
       { key: "repo", label: "GitHub repository", type: "text", required: true, placeholder: "owner/name", hint: "The latest release on this repository must carry an asset named my-app.json." },
-      { key: "bundleId", label: "iPhone bundle ID", type: "text", placeholder: "com.yourname.skull", hint: "iPhone only. The bundle identifier in your Xcode project. ourapps creates the App ID on your Apple account when it does not exist." },
+      { key: "bundleId", label: "iPhone bundle ID", type: "text", placeholder: "com.yourname.skull", hint: "The Apple bundle identifier in your Xcode project. Also the default for Mac and Apple TV setup. ourapps creates the App ID on your Apple account when it does not exist." },
       { key: "manifestUrl", label: "my-app.json URL", type: "url", hint: "Only when the file is hosted somewhere other than the repository's releases." },
     ],
   },
@@ -189,6 +189,9 @@ const SHOT_FIELDS: { key: "all" | ScreenshotPlatform; label: string; hint: strin
   { key: "ipad", label: "iPad", hint: "Tablet screenshots, usually 3:4. An iPad tab appears once these exist, even without ios.devices." },
   { key: "android", label: "Android", hint: "Portrait phone screenshots from Android." },
   { key: "web", label: "Web", hint: "Browser window screenshots, usually landscape." },
+  { key: "macos", label: "Mac", hint: "Mac window screenshots." },
+  { key: "windows", label: "Windows", hint: "Windows window screenshots." },
+  { key: "tvos", label: "Apple TV", hint: "Television screenshots, usually landscape." },
 ];
 
 export async function appForm(root: HTMLElement, appId: string | null): Promise<void> {
@@ -221,7 +224,7 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
     me,
     isNew ? "New app" : app.name ?? "App",
     html`
-      ${!isNew ? html`<div id="release-card">${releaseCardSkeleton()}</div><div id="testflight-card"></div>` : ""}
+      ${!isNew ? html`<div id="release-card">${releaseCardSkeleton()}</div><div id="testflight-card"></div><div id="macos-testflight-card"></div><div id="tvos-testflight-card"></div>` : ""}
       <form id="app-form" class="card mt">
         ${SECTIONS.map((s) => html`<div class="form-section"><div class="about"><h3>${s.title}</h3><p>${s.about}</p></div><div>${s.fields.map(field)}</div></div>`)}
         <div class="form-section">
@@ -300,6 +303,7 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
   });
 
   if (appId) void loadTestflightCard(root, me, app as DevApp);
+  if (appId) for (const platform of ["macos", "tvos"] as const) void loadPlatformTestflightCard(root, app as DevApp, platform);
   if (appId) {
     const fresh = sessionStorage.getItem(`buildToken:${appId}`);
     if (fresh) {
@@ -699,6 +703,55 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   else schedule();
 }
 
+export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
+  const name = platform === "macos" ? "Mac" : "Apple TV";
+  const needs: Record<TestflightNeed, Raw> = {
+    "bundle-id": html`Save the Apple bundle identifier under Build and publishing below. The default for this platform is the app's bundle identifier: <code>${app.bundleId}</code>.`,
+    "apple-key": html`Save your App Store Connect key in <a href="/dev/settings#credentials">Settings</a>.`,
+    signing: html`Set up Apple Distribution signing in <a href="/dev/settings#signing">Settings</a>.`,
+    "review-contact": html`Save your beta review contact in <a href="/dev/settings#review-contact">Settings</a>.`,
+    "store-app": html`Open <a href="${ASC_APPS}" target="_blank" rel="noopener">App Store Connect</a>. For an existing app record, add the ${platform === "macos" ? "macOS" : "tvOS"} platform to that record. For a new record, choose that platform and bundle identifier <code>${t.storeApp?.bundleId ?? app.bundleId}</code>. Then check again.`,
+  };
+  return html`<div class="card mt"><h2>${name} TestFlight</h2><p class="small muted">Separate setup and invitation for ${name}. Direct download packages are independent of TestFlight setup. ${platform === "macos" ? "Setup runs in your signed-in browser and provisions the Mac installer signing key on the server." : "The app must include an Apple TV build."}</p>
+    ${t.needs ? callout("info", needs[t.needs]) : t.stage ? html`<p>${pill(STAGE_PILL[t.stage][0], STAGE_PILL[t.stage][1])}</p>` : html`<p class="small">Enable ${name} TestFlight when your app supports this platform.</p>`}
+    ${t.setUp && t.stage !== "open" ? html`<p class="small muted">The repository must upload a ${name} build. Apple processes and reviews it before its matching invitation can open. Use Check with Apple to refresh this card.</p>` : ""}
+    ${t.buildRequest?.error ? callout("bad", html`<p>Build request failed: ${t.buildRequest.error}</p>`) : ""}
+    ${platform === "macos" && !t.setUp ? html`<label class="check"><input type="checkbox" data-native-mac /> Native Mac app (leave unchecked for Mac Catalyst)</label>` : ""}
+    <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
+    ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
+    ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
+    ${buildTable(t)}<div data-platform-error></div></div>`;
+}
+
+async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platform: "macos" | "tvos"): Promise<void> {
+  const box = root.querySelector<HTMLElement>(`#${platform}-testflight-card`);
+  if (!box) return;
+  const path = `/api/dev/apps/${app.id}/testflight/${platform}`;
+  const render = (t: TestflightStatus) => {
+    box.innerHTML = platformTestflightCard(app, platform, t).html;
+    const act = async (button: HTMLButtonElement, suffix = "", repair = false) => {
+      box.querySelectorAll<HTMLButtonElement>("button").forEach(b => b.disabled = true);
+      button.textContent = "Checking...";
+      try {
+        const native = box.querySelector<HTMLInputElement>("[data-native-mac]");
+        const body = suffix ? undefined : { ...(native ? { nativeMac: native.checked } : {}), ...(repair ? { repair: true } : {}) };
+        render(await api<TestflightStatus>("POST", path + suffix, body));
+      } catch (err) {
+        render(t);
+        box.querySelector<HTMLElement>("[data-platform-error]")!.innerHTML = errorBox(err).html;
+      }
+    };
+    const setup = box.querySelector<HTMLButtonElement>("[data-platform-setup]")!;
+    setup.onclick = () => void act(setup);
+    const build = box.querySelector<HTMLButtonElement>("[data-platform-build]");
+    if (build) build.onclick = () => void act(build, "/build");
+    const repair = box.querySelector<HTMLButtonElement>("[data-platform-repair]");
+    if (repair) repair.onclick = () => void act(repair, "", true);
+  };
+  try { render(await api<TestflightStatus>("GET", path)); }
+  catch (err) { box.innerHTML = errorBox(err).html; }
+}
+
 function releaseCardSkeleton(): Raw {
   return html`<div class="card"><div class="row"><div class="skeleton" style="width:120px;height:20px"></div><div class="grow"></div><div class="skeleton" style="width:80px;height:20px"></div></div><div class="skeleton mt" style="height:14px;width:60%"></div></div>`;
 }
@@ -713,7 +766,7 @@ async function loadReleaseCard(root: HTMLElement, appId: string, app: DevApp): P
     return;
   }
   const r = release;
-  const platforms = r.install ? [r.install.ios ? "iPhone" : "", r.install.android ? "Android" : "", r.install.pwa ? "Web" : ""].filter(Boolean).join(", ") : "";
+  const platforms = r.install ? [r.install.ios ? "iPhone" : "", r.install.android ? "Android" : "", r.install.pwa ? "Web" : "", r.install.macos ? "Mac" : "", r.install.windows ? "Windows" : "", r.install.tvos ? "Apple TV" : ""].filter(Boolean).join(", ") : "";
   box.innerHTML = html`
     <div class="card">
       <div class="row wrap">
@@ -1204,6 +1257,7 @@ export async function agents(root: HTMLElement): Promise<void> {
             <tr><td><code>POST /api/dev/apps/:id/links</code></td><td>new share link</td></tr>
             <tr><td><code>GET /api/public/links/:id/qr.svg</code></td><td>QR for a link</td></tr>
             <tr><td><code>GET, POST /api/dev/apps/:id/testflight</code></td><td>where TestFlight stands and the next step; set it up</td></tr>
+            <tr><td><code>GET, POST /api/dev/apps/:id/testflight/:platform</code></td><td>separate Mac or Apple TV setup/status; Mac setup requires a browser session</td></tr>
           </table>
           <pre class="mt-s"><code>curl -H "Authorization: Bearer $OURAPPS_API_KEY" \\
   ${location.origin}/api/dev/apps</code></pre>

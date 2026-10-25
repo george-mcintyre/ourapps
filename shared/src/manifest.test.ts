@@ -61,7 +61,7 @@ describe("validateManifest", () => {
   it("requires at least one install path", () => {
     const result = validateManifest(withPatch({ install: { pwa: null, android: null, ios: null } }));
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.errors).toContain("install needs at least one of pwa, android, ios");
+    if (!result.ok) expect(result.errors).toContain("install needs at least one of pwa, android, ios, macos, windows, tvos");
   });
 
   it("requires every install key to be present", () => {
@@ -113,7 +113,7 @@ describe("validateManifest", () => {
     expect(validateManifest(withPatch({ screenshotsByPlatform: {} })).ok).toBe(true);
     const badKey = validateManifest(withPatch({ screenshotsByPlatform: { iPhone: ["https://x/1.png"] } }));
     expect(badKey.ok).toBe(false);
-    if (!badKey.ok) expect(badKey.errors[0]).toMatch(/keys must be iphone, ipad, android or web \(found "iPhone"\)/);
+    if (!badKey.ok) expect(badKey.errors[0]).toMatch(/keys must be iphone, ipad, android, web, macos, windows, tvos \(found "iPhone"\)/);
     const badUrl = validateManifest(withPatch({ screenshotsByPlatform: { android: ["http://x/1.png"] } }));
     expect(badUrl.ok).toBe(false);
     if (!badUrl.ok) expect(badUrl.errors).toContain("screenshotsByPlatform.android must be a list of https URLs");

@@ -9,6 +9,7 @@ import { HttpError, json } from "../http.js";
 import { verifyLink } from "../links.js";
 import { loadSecrets } from "../secrets.js";
 import { refreshApprovedVersions } from "../testflight.js";
+import { APPLE_PLATFORMS, type ApplePlatform } from "../apple-platform.js";
 import { fetchUpstream, loadManifest, resolveRelease } from "../upstream.js";
 import { isBundleUrl, webAppUrl } from "../webapp.js";
 
@@ -45,7 +46,20 @@ function openInvitation(app: AppRow): string | null {
 // The version TestFlight gives friends: the newest build Apple has approved, which can be older than the release.
 async function testflightVersion(env: Env, app: AppRow): Promise<string | null> {
   if (!app.ascAppId) return null;
-  return (await Db.from(env).latestOpenBuild(app.id))?.version ?? null;
+  return (await Db.from(env).latestOpenBuild(app.id, app.platform ?? "ios"))?.version ?? null;
+}
+
+async function appleReadiness(env: Env, deps: Deps, app: AppRow) {
+  const ready = {} as Record<ApplePlatform, { version: string; testflightUrl: string } | null>;
+  const db = Db.from(env);
+  for (const platform of APPLE_PLATFORMS) {
+    const target = platform === "ios" ? app : await db.platformApp(app, platform);
+    await refreshApprovedVersions(env, deps, target);
+    const invitation = openInvitation(target);
+    const build = invitation && target.ascAppId ? await db.latestOpenBuild(app.id, platform, deps.now().toISOString()) : null;
+    ready[platform] = invitation && build ? { version: build.version, testflightUrl: invitation } : null;
+  }
+  return ready;
 }
 
 // GET /api/public/dev/:slug - a developer's opted-in apps, details only.
@@ -59,7 +73,7 @@ export async function devPage(env: Env, slug: string): Promise<Response> {
 
 // Everything an install page needs; shared by share links and the dashboard preview.
 export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Developer, linkId: string | null) {
-  await refreshApprovedVersions(env, deps, app);
+  const apple = await appleReadiness(env, deps, app);
   const secrets = await loadSecrets(env, dev.id, ["githubToken"]);
   const historyPromise = loadHistory(env, deps, app, secrets.githubToken);
   // Private release assets need the token; the browser gets signed links instead.
@@ -70,8 +84,11 @@ export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Deve
   try {
     const release = await resolveRelease(env, deps, app, secrets.githubToken);
     manifest = await signManifestLinks(env, deps, dev.id, await loadManifest(env, deps, app, secrets.githubToken));
+    if (!manifest.install.ios) apple.ios = null;
+    if (!manifest.install.macos?.testflight) apple.macos = null;
+    if (!manifest.install.tvos) apple.tvos = null;
     if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = linkId ? webAppUrl(env, linkId) : null;
-    if (manifest.install.ios && app.ascAppId) manifest.install.ios.testflight = openInvitation(app);
+    if (manifest.install.ios && app.ascAppId) manifest.install.ios.testflight = apple.ios?.testflightUrl ?? null;
     manifest.icon = await sign(manifest.icon);
     manifest.screenshots = await signAll(manifest.screenshots ?? []);
   } catch (err) {
@@ -96,6 +113,7 @@ export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Deve
           minPlayers: manifest.minPlayers,
           maxPlayers: manifest.maxPlayers,
           install: manifest.install,
+          apple,
           fallbackName: manifest.name,
           fallbackIcon: manifest.icon,
           fallbackDescription: manifest.description,
@@ -130,7 +148,7 @@ export async function linkPage(env: Env, deps: Deps, linkId: string): Promise<Re
 // GET /api/public/links/:id/latest - what an installed app polls to offer an update.
 export async function linkLatest(env: Env, deps: Deps, linkId: string): Promise<Response> {
   const { app, dev } = await activeLink(env, deps, linkId);
-  await refreshApprovedVersions(env, deps, app);
+  const apple = await appleReadiness(env, deps, app);
   const secrets = await loadSecrets(env, dev.id, ["githubToken"]);
   let release: Awaited<ReturnType<typeof resolveRelease>>;
   let manifest: Awaited<ReturnType<typeof loadManifest>>;
@@ -143,15 +161,21 @@ export async function linkLatest(env: Env, deps: Deps, linkId: string): Promise<
     throw new HttpError(503, "no release of this app is available right now");
   }
   if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = webAppUrl(env, linkId);
-  if (manifest.install.ios && app.ascAppId) manifest.install.ios.testflight = openInvitation(app);
+  const ios = manifest.install.ios ? apple.ios : null;
+  if (!manifest.install.ios) apple.ios = null;
+  if (!manifest.install.macos?.testflight) apple.macos = null;
+  if (!manifest.install.tvos) apple.tvos = null;
   return json({
     name: app.name || manifest.name,
     version: manifest.version,
     // TestFlight installs and updates iPhone apps; an app can open this link.
-    testflightUrl: manifest.install.ios?.testflight ?? null,
+    testflightUrl: ios?.testflightUrl ?? null,
     // What TestFlight installs; compare with this on iPhone, not with version.
-    testflightVersion: manifest.install.ios?.testflight ? await testflightVersion(env, app) : null,
+    testflightVersion: ios?.version ?? null,
+    apple,
     android: manifest.install.android ? { apkUrl: manifest.install.android.apk } : null,
+    macos: manifest.install.macos?.packages.length ? { version: manifest.version, packages: manifest.install.macos.packages } : null,
+    windows: manifest.install.windows?.packages.length ? { version: manifest.version, packages: manifest.install.windows.packages } : null,
     pwa: manifest.install.pwa,
     linksExpireAt: new Date((Math.floor(deps.now().getTime() / 1000) + 60 * 60) * 1000).toISOString(),
   });
@@ -164,7 +188,7 @@ export async function linkQr(env: Env, deps: Deps, linkId: string): Promise<Resp
   return new Response(svg, { status: 200, headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, max-age=3600" } });
 }
 
-// GET /dl/:token - stream an APK or an icon behind a signed link.
+// GET /dl/:token - stream a package or image behind a signed link.
 export async function serveArtefact(env: Env, deps: Deps, token: string): Promise<Response> {
   if (!env.LINK_SECRET) throw new HttpError(503, "LINK_SECRET is not configured");
   const link = await verifyLink(env.LINK_SECRET, token, deps.now());
@@ -175,8 +199,9 @@ export async function serveArtefact(env: Env, deps: Deps, token: string): Promis
   if (link.kind === "icon") {
     return new Response(upstream.body, { status: 200, headers: { "Content-Type": upstream.headers.get("Content-Type") ?? "image/png", "Cache-Control": "private, max-age=3600" } });
   }
+  const contentTypes = { apk: "application/vnd.android.package-archive", dmg: "application/x-apple-diskimage", exe: "application/vnd.microsoft.portable-executable" };
   return new Response(upstream.body, {
     status: 200,
-    headers: { "Content-Type": "application/vnd.android.package-archive", "Content-Disposition": `attachment; filename="app.apk"`, "Cache-Control": "no-store" },
+    headers: { "Content-Type": contentTypes[link.kind], "Content-Disposition": `attachment; filename="app.${link.kind}"`, "Cache-Control": "no-store" },
   });
 }

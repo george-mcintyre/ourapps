@@ -12,6 +12,7 @@ import { CHANGELOG_ASSET } from "../history.js";
 import { fetchManifest, loadManifest, resolveRelease } from "../upstream.js";
 import { webHosting } from "../webapp.js";
 import { localNeed, refreshTestflight, renewStoreProfile, requestBuild, reviewContact, setUpTestflight, storeAppForm, testflightStage, type TestflightNeed } from "../testflight.js";
+import { applePlatform, profileType } from "../apple-platform.js";
 import { buildLinkPage } from "./public.js";
 
 type AppInput = Partial<Record<"name" | "tagline" | "description" | "whatsNew" | "size" | "minOs" | "ageNote" | "privacySummary" | "iconUrl" | "repo" | "manifestUrl" | "bundleId", string>> & {
@@ -223,7 +224,7 @@ export async function setUpSigning(request: Request, env: Env, deps: Deps, dev: 
   await db.putSigningCertificate(certificate);
   await audit(request, env, deps, dev.id, "signing-set-up", `${issued.name} ${issued.serialNumber}`);
   const apps = [];
-  for (const app of await db.appsByDeveloper(dev.id)) {
+  for (const app of (await db.appsWithTestflight()).filter((app) => app.developerId === dev.id)) {
     if (!app.ascAppId) continue;
     try {
       await renewStoreProfile(env, apple, app, issued.id);
@@ -369,15 +370,17 @@ export async function revokeLink(env: Env, deps: Deps, dev: Developer, id: strin
 // Before set-up, "needs" names the developer's next step; null with setUp false means ourapps can go
 // ahead (POST) and find out whether the app is in App Store Connect yet. After set-up, "stage" says
 // what the invitation waits for.
-export async function testflightStatus(env: Env, dev: Developer, id: string): Promise<Response> {
+export async function testflightStatus(env: Env, dev: Developer, id: string, platformName = "ios"): Promise<Response> {
   const db = Db.from(env);
-  const app = await ownedApp(db, dev, id);
+  const app = await db.platformApp(await ownedApp(db, dev, id), applePlatform(platformName));
   return json(await testflightView(db, app, dev, app.ascAppId ? null : await localNeed(env, dev, app)));
 }
 
 async function testflightView(db: Db, app: AppRow, dev: Developer, needs: TestflightNeed | null) {
-  const builds = await db.testflightBuilds(app.id, 6);
+  const builds = await db.testflightBuilds(app.id, 6, app.platform ?? "ios");
   return {
+    platform: app.platform ?? "ios",
+    profileType: profileType(app.platform ?? "ios", app.nativeMac),
     setUp: Boolean(app.ascAppId),
     needs,
     // What to type into App Store Connect's New App form, until the app is set up.
@@ -405,15 +408,20 @@ async function testflightView(db: Db, app: AppRow, dev: Developer, needs: Testfl
 
 // POST /api/dev/apps/:id/testflight - sets TestFlight up, then asks the repository for the first build.
 // Once set up it checks with Apple now; body {"repair": true} runs the set-up again. Always 200.
-export async function setUpAppTestflight(request: Request, env: Env, deps: Deps, dev: Developer, id: string): Promise<Response> {
+export async function setUpAppTestflight(request: Request, env: Env, deps: Deps, dev: Developer, id: string, platformName = "ios"): Promise<Response> {
   const db = Db.from(env);
-  const app = await ownedApp(db, dev, id);
-  const body = await optionalJson<{ repair?: unknown }>(request);
+  const platform = applePlatform(platformName);
+  if (platform === "macos") requireSession(dev as AuthedDeveloper);
+  const app = await db.platformApp(await ownedApp(db, dev, id), platform);
+  const body = await optionalJson<{ repair?: unknown; nativeMac?: unknown }>(request);
+  if (body.nativeMac !== undefined && (platform !== "macos" || typeof body.nativeMac !== "boolean")) throw new HttpError(400, "nativeMac must be a boolean for macos setup");
+  if (body.nativeMac !== undefined && app.ascAppId && body.nativeMac !== app.nativeMac && body.repair !== true) throw new HttpError(409, "changing Mac profile type requires repair: true");
+  if (typeof body.nativeMac === "boolean") app.nativeMac = body.nativeMac;
   let needs: TestflightNeed | null = null;
   if (!app.ascAppId || body.repair === true) {
     const wasSetUp = Boolean(app.ascAppId);
     needs = await setUpTestflight(env, deps, dev, app);
-    if (!needs && !wasSetUp && (await db.testflightBuilds(app.id, 1)).length === 0) await requestBuild(env, deps, app, "testflight-set-up");
+    if (!needs && !wasSetUp && (await db.testflightBuilds(app.id, 1, platform)).length === 0) await requestBuild(env, deps, app, "testflight-set-up");
   }
   if (!needs && app.ascAppId) {
     try {
@@ -426,9 +434,9 @@ export async function setUpAppTestflight(request: Request, env: Env, deps: Deps,
 }
 
 // POST /api/dev/apps/:id/testflight/build - asks the app's repository for a release now.
-export async function requestAppBuild(env: Env, deps: Deps, dev: Developer, id: string): Promise<Response> {
+export async function requestAppBuild(env: Env, deps: Deps, dev: Developer, id: string, platformName = "ios"): Promise<Response> {
   const db = Db.from(env);
-  const app = await ownedApp(db, dev, id);
+  const app = await db.platformApp(await ownedApp(db, dev, id), applePlatform(platformName));
   if (!app.ascAppId) throw new HttpError(409, "set up TestFlight for this app first");
   await requestBuild(env, deps, app, "requested");
   return json(await testflightView(db, app, dev, null));
@@ -472,7 +480,7 @@ export async function releaseStatus(env: Env, deps: Deps, dev: Developer, id: st
       assets: release.assets,
       manifestUrl: release.manifestUrl,
       version: manifest.version,
-      install: { ios: Boolean(manifest.install.ios), android: Boolean(manifest.install.android), pwa: Boolean(manifest.install.pwa) },
+        install: { ios: Boolean(manifest.install.ios), android: Boolean(manifest.install.android), pwa: Boolean(manifest.install.pwa), macos: Boolean(manifest.install.macos), windows: Boolean(manifest.install.windows), tvos: Boolean(manifest.install.tvos) },
       web: await webHosting(deps, manifest.install.pwa, release),
       screenshots: (manifest.screenshots ?? []).length,
       changelog: release.assets.some((n) => CHANGELOG_ASSET.test(n)),

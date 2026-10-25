@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickScreenshots } from "./screenshots.js";
+import { pickScreenshots, SCREENSHOT_PLATFORMS } from "./screenshots.js";
 
 describe("pickScreenshots", () => {
   it("prefers the platform's own list, then the general list", () => {
@@ -10,9 +10,9 @@ describe("pickScreenshots", () => {
   });
 
   it("uses a lone set for every platform", () => {
-    for (const only of ["iphone", "ipad", "android", "web"] as const) {
+    for (const only of SCREENSHOT_PLATFORMS) {
       const sets = { all: [], [only]: ["x"] };
-      for (const p of ["iphone", "ipad", "android", "web"] as const) expect(pickScreenshots(p, sets).urls).toEqual(["x"]);
+      for (const p of SCREENSHOT_PLATFORMS) expect(pickScreenshots(p, sets).urls).toEqual(["x"]);
     }
   });
 
@@ -21,6 +21,10 @@ describe("pickScreenshots", () => {
     expect(pickScreenshots("android", sets).source).toBe("iphone");
     expect(pickScreenshots("ipad", sets).source).toBe("iphone");
     expect(pickScreenshots("web", sets).source).toBe("web");
+    expect(pickScreenshots("macos", sets).source).toBe("web");
+    expect(pickScreenshots("windows", sets).source).toBe("web");
+    expect(pickScreenshots("tvos", sets).source).toBe("web");
+    expect(pickScreenshots("macos", { all: [], windows: ["pc"], web: ["browser"] }).source).toBe("windows");
   });
 
   it("returns nothing when no screenshots exist anywhere", () => {

@@ -150,14 +150,15 @@ export async function examplePage(root: HTMLElement): Promise<void> {
   "name": "Poker Night",
   "version": "1.3.0",
   "testflightUrl": "https://testflight.apple.com/join/...",
+  "apple": { "ios": { "version": "1.2.0", "testflightUrl": "https://testflight.apple.com/join/..." }, "macos": null, "tvos": null },
   "android": { "apkUrl": "https://ourapps.app/dl/..." },
   "pwa": null,
   "linksExpireAt": "2026-10-16T11:00:00.000Z"
 }</code></pre>
           <ol class="steps">
             <li>Create a share link labelled "In-app updates" and never revoke it. Bake its id into the app.</li>
-            <li>On launch, fetch <code>/latest</code> and compare <code>version</code> with the running version.</li>
-            <li>If newer, show one button. On Android open <code>android.apkUrl</code> (the phone downloads it and asks to install). On iPhone TestFlight updates the app itself; <code>testflightUrl</code> opens TestFlight if you want a button.</li>
+            <li>On launch, fetch <code>/latest</code>. Android compares <code>version</code>; iPhone and iPad compare the approved <code>apple.ios.version</code>. A null Apple entry means no ready invitation.</li>
+            <li>If newer, show one button. Android opens <code>android.apkUrl</code>. TestFlight updates Apple apps itself; an optional button opens the matching <code>apple.ios.testflightUrl</code>. Mac and Apple TV use only their own Apple entries.</li>
             <li>Fetch right before opening: the install links are good for an hour.</li>
           </ol>
           <p>The <a href="/dev/guide#updates">guide</a> has the Swift and Kotlin snippets, and the agent prompt asks your coding agent to add the check for you.</p>

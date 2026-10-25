@@ -1,6 +1,7 @@
 // Typed D1 access. Rows are snake_case in SQL and camelCase in code.
 import type { ScreenshotPlatform } from "@my/store-shared";
 import type { Env } from "./env.js";
+import type { ApplePlatform } from "./apple-platform.js";
 
 export interface Developer {
   id: string;
@@ -26,8 +27,9 @@ export interface DeveloperSecrets {
   githubToken?: string;
   // PKCS #8 PEM of ourapps' Apple Distribution certificate for this developer.
   signingKey?: string;
+  installerSigningKey?: string;
   // When each field was last saved, keyed by field name.
-  savedAt?: Partial<Record<"appleIssuerId" | "appleKeyId" | "applePrivateKey" | "appleTeamId" | "githubToken" | "signingKey", string>>;
+  savedAt?: Partial<Record<"appleIssuerId" | "appleKeyId" | "applePrivateKey" | "appleTeamId" | "githubToken" | "signingKey" | "installerSigningKey", string>>;
 }
 
 // The Apple Distribution certificate ourapps created; its private key is the signingKey secret.
@@ -42,6 +44,8 @@ export interface SigningCertificateRow {
 }
 
 export interface AppRow {
+  platform?: ApplePlatform;
+  nativeMac?: boolean;
   id: string;
   developerId: string;
   name: string;
@@ -121,6 +125,7 @@ export type TestflightState = "uploading" | "uploaded" | "processing" | "in-revi
 export type LinkState = "open" | "not-accepting" | "full" | "missing";
 
 export interface TestflightBuildRow {
+  platform?: ApplePlatform;
   id: number;
   appId: string;
   version: string;
@@ -377,10 +382,22 @@ export class Db {
   }
 
   async setAppTestflight(app: AppRow): Promise<void> {
+    if (app.platform && app.platform !== "ios") {
+      const { ascAppId, betaGroupId, testflightUrl, storeProfileId, storeProfileUuid, storeProfileName, storeProfileBase64, testflightLinkState, testflightCheckedAt, buildRequestedAt, buildRequestError, nativeMac } = app;
+      const state = { ascAppId, betaGroupId, testflightUrl, storeProfileId, storeProfileUuid, storeProfileName, storeProfileBase64, testflightLinkState, testflightCheckedAt, buildRequestedAt, buildRequestError, nativeMac };
+      await this.d1.prepare("INSERT INTO app_testflight_platforms (app_id, platform, state_json, checked_at) VALUES (?, ?, ?, ?) ON CONFLICT(app_id, platform) DO UPDATE SET state_json = excluded.state_json, checked_at = excluded.checked_at").bind(app.id, app.platform, JSON.stringify(state), testflightCheckedAt ?? null).run();
+      return;
+    }
     await this.d1
       .prepare("UPDATE apps SET asc_app_id = ?, beta_group_id = ?, testflight_url = ?, store_profile_id = ?, store_profile_uuid = ?, store_profile_name = ?, store_profile_base64 = ? WHERE id = ?")
       .bind(app.ascAppId ?? null, app.betaGroupId ?? null, app.testflightUrl ?? null, app.storeProfileId ?? null, app.storeProfileUuid ?? null, app.storeProfileName ?? null, app.storeProfileBase64 ?? null, app.id)
       .run();
+  }
+
+  async platformApp(app: AppRow, platform: ApplePlatform): Promise<AppRow> {
+    if (platform === "ios") return { ...app, platform };
+    const saved = await this.d1.prepare("SELECT state_json FROM app_testflight_platforms WHERE app_id = ? AND platform = ?").bind(app.id, platform).first<{ state_json: string }>();
+    return { ...app, ascAppId: null, betaGroupId: null, testflightUrl: null, storeProfileId: null, storeProfileUuid: null, storeProfileName: null, storeProfileBase64: null, testflightLinkState: null, testflightCheckedAt: null, buildRequestedAt: null, buildRequestError: null, nativeMac: false, ...(saved ? JSON.parse(saved.state_json) : {}), platform };
   }
 
   async setLinkState(appId: string, state: LinkState | null, at: string): Promise<void> {
@@ -394,38 +411,44 @@ export class Db {
   // Least recently checked first, so the schedule reaches every app in turn.
   async appsWithTestflight(): Promise<AppRow[]> {
     const res = await this.d1.prepare("SELECT * FROM apps WHERE asc_app_id IS NOT NULL ORDER BY testflight_checked_at").all<Raw>();
-    return res.results.map((r) => row<AppRow>(r, appConvert)!);
+    const platforms = await this.d1.prepare("SELECT app_id, platform FROM app_testflight_platforms ORDER BY checked_at").all<{ app_id: string; platform: ApplePlatform }>();
+    const apps = res.results.map((r) => row<AppRow>(r, appConvert)!);
+    for (const p of platforms.results) {
+      const base = await this.appById(p.app_id);
+      if (base) apps.push(await this.platformApp(base, p.platform));
+    }
+    return apps.sort((a, b) => (a.testflightCheckedAt ?? "").localeCompare(b.testflightCheckedAt ?? ""));
   }
 
   async insertTestflightBuild(b: Omit<TestflightBuildRow, "id">): Promise<number> {
     const res = await this.d1
-      .prepare("INSERT INTO testflight_builds (app_id, version, build_number, upload_id, upload_file_id, build_id, whats_new, state, message, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(b.appId, b.version, b.buildNumber, b.uploadId, b.uploadFileId, b.buildId, b.whatsNew, b.state, b.message, b.createdAt, b.updatedAt)
+      .prepare("INSERT INTO testflight_builds (app_id, version, build_number, upload_id, upload_file_id, build_id, whats_new, state, message, created_at, updated_at, platform) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(b.appId, b.version, b.buildNumber, b.uploadId, b.uploadFileId, b.buildId, b.whatsNew, b.state, b.message, b.createdAt, b.updatedAt, b.platform ?? "ios")
       .run();
     return Number(res.meta.last_row_id);
   }
 
-  async testflightBuild(appId: string, fileId: string): Promise<TestflightBuildRow | null> {
-    return row<TestflightBuildRow>(await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND upload_file_id = ?").bind(appId, fileId).first());
+  async testflightBuild(appId: string, fileId: string, platform: ApplePlatform = "ios"): Promise<TestflightBuildRow | null> {
+    return row<TestflightBuildRow>(await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND upload_file_id = ? AND platform = ?").bind(appId, fileId, platform).first());
   }
 
-  async testflightBuilds(appId: string, limit = 5): Promise<TestflightBuildRow[]> {
-    const res = await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? ORDER BY id DESC LIMIT ?").bind(appId, limit).all<Raw>();
+  async testflightBuilds(appId: string, limit = 5, platform: ApplePlatform = "ios"): Promise<TestflightBuildRow[]> {
+    const res = await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND platform = ? ORDER BY id DESC LIMIT ?").bind(appId, platform, limit).all<Raw>();
     return res.results.map((r) => row<TestflightBuildRow>(r)!);
   }
 
   // Builds still on their way to friends, least recently checked first; optionally one app's only.
-  async pendingTestflightBuilds(appId?: string): Promise<TestflightBuildRow[]> {
+  async pendingTestflightBuilds(appId?: string, platform: ApplePlatform = "ios"): Promise<TestflightBuildRow[]> {
     const states = "state IN ('uploaded', 'processing', 'in-review', 'approved')";
     const res = appId
-      ? await this.d1.prepare(`SELECT * FROM testflight_builds WHERE ${states} AND app_id = ? ORDER BY updated_at LIMIT 5`).bind(appId).all<Raw>()
+      ? await this.d1.prepare(`SELECT * FROM testflight_builds WHERE ${states} AND app_id = ? AND platform = ? ORDER BY updated_at LIMIT 5`).bind(appId, platform).all<Raw>()
       : await this.d1.prepare(`SELECT * FROM testflight_builds WHERE ${states} ORDER BY updated_at LIMIT 20`).all<Raw>();
     return res.results.map((r) => row<TestflightBuildRow>(r)!);
   }
 
   // The newest build friends can install through TestFlight.
-  async latestOpenBuild(appId: string): Promise<TestflightBuildRow | null> {
-    return row<TestflightBuildRow>(await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND state = 'open' ORDER BY id DESC LIMIT 1").bind(appId).first());
+  async latestOpenBuild(appId: string, platform: ApplePlatform = "ios", now = new Date().toISOString()): Promise<TestflightBuildRow | null> {
+    return row<TestflightBuildRow>(await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND platform = ? AND state = 'open' AND (expires_at IS NULL OR expires_at > ?) ORDER BY id DESC LIMIT 1").bind(appId, platform, now).first());
   }
 
   async updateTestflightBuild(b: TestflightBuildRow): Promise<void> {
@@ -437,14 +460,14 @@ export class Db {
 
   // Signing certificate
 
-  async signingCertificate(developerId: string): Promise<SigningCertificateRow | null> {
-    return row<SigningCertificateRow>(await this.d1.prepare("SELECT * FROM signing_certificates WHERE developer_id = ?").bind(developerId).first());
+  async signingCertificate(developerId: string, installer = false): Promise<SigningCertificateRow | null> {
+    return row<SigningCertificateRow>(await this.d1.prepare(`SELECT * FROM ${installer ? "installer_certificates" : "signing_certificates"} WHERE developer_id = ?`).bind(developerId).first());
   }
 
-  async putSigningCertificate(c: SigningCertificateRow): Promise<void> {
+  async putSigningCertificate(c: SigningCertificateRow, installer = false): Promise<void> {
     await this.d1
       .prepare(
-        `INSERT INTO signing_certificates (developer_id, certificate_id, name, serial_number, certificate_base64, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO ${installer ? "installer_certificates" : "signing_certificates"} (developer_id, certificate_id, name, serial_number, certificate_base64, expiration_date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(developer_id) DO UPDATE SET certificate_id = excluded.certificate_id, name = excluded.name, serial_number = excluded.serial_number,
          certificate_base64 = excluded.certificate_base64, expiration_date = excluded.expiration_date, created_at = excluded.created_at`,
       )

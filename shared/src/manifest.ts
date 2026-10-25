@@ -1,5 +1,6 @@
 // Validation for /my-app.json, schema 1. Contract owner: @my:orchestrator.
 import { SCREENSHOT_PLATFORMS, type ScreenshotPlatform } from "./screenshots.js";
+import { desktopPackages, validateAppleTarget, validateDesktop, type AppleTarget, type MacTarget, type WindowsTarget } from "./desktop.js";
 
 export const SUPPORTED_SCHEMA = 1;
 
@@ -21,6 +22,9 @@ export interface AppManifest {
     // testflight is the public invitation link, null until Apple approves the first build.
     // devices is display only: which Apple devices the build targets; absent makes no claim.
     ios: { bundleId: string; testflight: string | null; devices?: IosDevice[] } | null;
+    macos?: MacTarget | null;
+    windows?: WindowsTarget | null;
+    tvos?: AppleTarget | null;
   };
 }
 
@@ -71,7 +75,7 @@ export function validateManifest(input: unknown): ManifestResult {
     if (!isRecord(sp)) errors.push("screenshotsByPlatform must be an object");
     else
       for (const [key, list] of Object.entries(sp)) {
-        if (!(SCREENSHOT_PLATFORMS as readonly string[]).includes(key)) errors.push(`screenshotsByPlatform keys must be iphone, ipad, android or web (found "${key.slice(0, 20)}")`);
+        if (!(SCREENSHOT_PLATFORMS as readonly string[]).includes(key)) errors.push(`screenshotsByPlatform keys must be ${SCREENSHOT_PLATFORMS.join(", ")} (found "${key.slice(0, 20)}")`);
         else if (!Array.isArray(list) || !list.every(isHttpsUrl)) errors.push(`screenshotsByPlatform.${key} must be a list of https URLs`);
       }
   }
@@ -102,7 +106,11 @@ export function validateManifest(input: unknown): ManifestResult {
       }
     }
   }
-  if (pwa === null && android === null && ios === null) errors.push("install needs at least one of pwa, android, ios");
+  for (const platform of ["macos", "windows"] as const) {
+    if (install[platform] !== undefined && install[platform] !== null) validateDesktop(install[platform], platform, errors);
+  }
+  if (install.tvos !== undefined && install.tvos !== null) validateAppleTarget(install.tvos, "install.tvos", errors);
+  if (pwa === null && android === null && ios === null && !install.macos && !install.windows && !install.tvos) errors.push("install needs at least one of pwa, android, ios, macos, windows, tvos");
   if (pwa === undefined || android === undefined || ios === undefined) errors.push("install must name pwa, android and ios (null when absent)");
 
   if (errors.length > 0) return { ok: false, errors };
@@ -114,5 +122,22 @@ export function validateManifest(input: unknown): ManifestResult {
     android: android === null ? null : { apk: (android as { apk: string }).apk },
     ios: iosIn === null ? null : { bundleId: iosIn.bundleId as string, testflight: (iosIn.testflight as string | null | undefined) ?? null, ...(iosIn.devices ? { devices: iosIn.devices as IosDevice[] } : {}) },
   };
+  for (const platform of ["macos", "windows"] as const) {
+    if (install[platform] === undefined) continue;
+    const value = install[platform] as MacTarget | WindowsTarget | null;
+    if (value === null) manifest.install[platform] = null;
+    else {
+      const target: MacTarget = { packages: desktopPackages(value) };
+      if (platform === "macos" && "testflight" in value && value.testflight) {
+        const t = value.testflight;
+        target.testflight = { bundleId: t.bundleId, minOsVersion: t.minOsVersion, architectures: [...t.architectures] };
+      }
+      manifest.install[platform] = target;
+    }
+  }
+  if (install.tvos !== undefined) {
+    const target = install.tvos as AppleTarget | null;
+    manifest.install.tvos = target === null ? null : { bundleId: target.bundleId, minOsVersion: target.minOsVersion };
+  }
   return { ok: true, manifest };
 }

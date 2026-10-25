@@ -194,13 +194,13 @@ describe("TestFlight", () => {
     const full = (await (await handle(api(null, "GET", `/api/public/links/${linkId}`), env, d)).json()) as { release: { version: string; testflightVersion: string | null } };
     expect(full.release).toMatchObject({ version: "0.1.0", testflightVersion: "1.0" });
     const upd = (await (await handle(api(null, "GET", `/api/public/links/${linkId}/latest`), env, d)).json()) as { version: string; testflightVersion: string | null };
-    expect(upd).toMatchObject({ version: "0.1.0", testflightVersion: "1.0" });
+    expect(upd).toMatchObject({ version: "0.1.0", testflightVersion: "1.0", apple: { ios: { version: "1.0", testflightUrl: "https://testflight.apple.com/join/AbCd1234" }, macos: null, tvos: null } });
     // A new approval reaches a public read without waiting for the scheduled check.
     await env.DB.prepare("UPDATE testflight_builds SET state = 'in-review' WHERE app_id = ?").bind(appId).run();
     state.beta = "IN_BETA_REVIEW";
     deps.advance(61_000);
     const beforeRead = calls.length;
-    expect((await (await handle(api(null, "GET", `/api/public/links/${linkId}/latest`), env, d)).json()) as Record<string, unknown>).toMatchObject({ testflightVersion: null });
+    expect((await (await handle(api(null, "GET", `/api/public/links/${linkId}/latest`), env, d)).json()) as Record<string, unknown>).toMatchObject({ testflightVersion: null, testflightUrl: null, apple: { ios: null, macos: null, tvos: null } });
     state.beta = "IN_BETA_TESTING";
     // Reads inside the one-minute window keep the last checked answer.
     expect((await (await handle(api(null, "GET", `/api/public/links/${linkId}/latest`), env, d)).json()) as Record<string, unknown>).toMatchObject({ testflightVersion: null });

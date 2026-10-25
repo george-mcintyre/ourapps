@@ -3,6 +3,7 @@ import { ApiError, api, whoAmI, type AppDetails, type HistoryEntry, type Install
 import { html, mount, paragraphs, raw, type Raw } from "../html.js";
 import { navigate } from "../nav.js";
 import { notesHtml } from "../notes.js";
+import { desktopPanel, televisionPanel } from "../desktop.js";
 import { screenshotSvg } from "../placeholders.js";
 import { appleDeviceName, detectInAppBrowser, detectPlatform, type InAppBrowser, type Platform } from "../platform.js";
 import { qrSvg, shareOrCopy } from "../qr.js";
@@ -39,12 +40,12 @@ export async function landing(root: HTMLElement): Promise<void> {
           <div>
             <span class="pill accent">${icon("bot", "icon-16")} Built with AI agents, shared with friends</span>
             <h1 style="margin-top:14px">Agentic programming with AI lets us build apps for the people we know.</h1>
-            <p class="lead">A coding agent and an evening produce a real app for your poker table, your family, your club. Not every app belongs in an app store. ourapps is how yours gets onto their phones: send a link, they tap it, it lands on their home screen.</p>
+            <p class="lead">A coding agent and an evening produce a real app for your poker table, your family, your club. Not every app belongs in an app store. ourapps shares yours with the people you know: send a link, they open it and choose the version for their device.</p>
             <div class="ctas">
               ${me ? html`<a class="btn lg" href="/dev">Open your console ${icon("arrow")}</a>` : html`<a class="btn lg" href="/api/auth/github">${icon("github")} Sign in with GitHub</a>`}
               <a class="btn lg secondary" href="/example">See an example: Poker Night</a>
             </div>
-            <p class="small faint mt">Free. No accounts for friends. Works with iPhone, Android and web apps. Credentials encrypted per account, nothing sold or tracked: <a href="/dev/guide#security">how we keep it safe</a>.</p>
+            <p class="small faint mt">Free. No ourapps accounts for friends. Install paths for iPhone, iPad, Android, Mac, Windows, Apple TV and web apps. Credentials encrypted per account, nothing sold or tracked: <a href="/dev/guide#security">how we keep it safe</a>.</p>
           </div>
           <a class="phone" href="/example/poker-night" aria-label="Open the Poker Night example page">
             <div class="screen">
@@ -81,8 +82,8 @@ export async function landing(root: HTMLElement): Promise<void> {
           <div class="section-title"><h2>For your friends</h2></div>
           <div class="grid-3">
             <div class="card"><div class="num">1</div><h3>Open the link</h3><p class="muted">A link or QR code from someone they know opens an install page that looks and feels like the store they already use.</p></div>
-            <div class="card"><div class="num">2</div><h3>Tap once or twice</h3><p class="muted">Android downloads straight away. iPhone and iPad install through Apple's free TestFlight app. The page explains each step in plain words.</p></div>
-            <div class="card"><div class="num">3</div><h3>It is on the home screen</h3><p class="muted">No app store listing, no account, no settings to change. Updates arrive the same way.</p></div>
+            <div class="card"><div class="num">2</div><h3>Choose your version</h3><p class="muted">Android, Mac and Windows offer direct packages. Apple devices use matching TestFlight invitations when ready. Web apps open in your browser.</p></div>
+            <div class="card"><div class="num">3</div><h3>Follow the install steps</h3><p class="muted">The page shows system requirements, package choices and instructions. Updates arrive through TestFlight or a fresh download.</p></div>
           </div>
           <div class="section-title"><h2>For you, the developer</h2></div>
           <div class="grid-3">
@@ -179,7 +180,8 @@ export async function installPage(root: HTMLElement, linkId: string): Promise<vo
       const next = await api<LinkPage>("GET", `/api/public/links/${encodeURIComponent(linkId)}`);
       const changed = next.release?.version !== data.release?.version
         || next.release?.testflightVersion !== data.release?.testflightVersion
-        || next.release?.install.ios?.testflight !== data.release?.install.ios?.testflight;
+        || next.release?.install.ios?.testflight !== data.release?.install.ios?.testflight
+        || JSON.stringify(next.release?.apple) !== JSON.stringify(data.release?.apple);
       if (changed && marker.isConnected) {
         stop();
         const y = scrollY;
@@ -231,16 +233,17 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
   const icon0 = app.iconUrl || data.release?.fallbackIcon || null;
   const description = app.description || data.release?.fallbackDescription || "";
   const sets: ScreenshotSets = data.screenshots;
-  const views = availableViews(data.release?.install, (v) => Boolean(sets[v]?.length));
+  const offered = availableViews(data.release?.install, (v) => Boolean(sets[v]?.length));
+  const views = d.platform === "macos" || d.platform === "windows" ? offered.filter(v => v === d.platform || v === "web" || v === "tvos") : offered;
   const current = chooseView(views, d.platform, d.device);
   const tabbed = showTabs(d.platform, views);
-  // On a computer every version gets a panel; on a phone or tablet only the matching one.
-  const shown: (ViewKind | null)[] = d.platform === "other" && views.length > 0 ? views : [current];
+  // Computers show selectable versions; phones show their matching version.
+  const shown: (ViewKind | null)[] = tabbed ? views : [current];
   const blocked = Boolean(d.inApp && !d.inApp.installWorks) || !data.release;
   const history = data.history ?? [];
   // The latest release's notes are the truth; the dashboard field only fills in when there are none.
   // iPhone and iPad get what TestFlight has, which can be older than the latest release.
-  const version = d.platform === "ios" && data.release?.install.ios?.testflight && data.release.testflightVersion ? data.release.testflightVersion : data.release?.version;
+  const version = d.platform === "ios" && data.release?.install.ios?.testflight ? (data.release.apple?.ios?.version ?? data.release.testflightVersion ?? data.release.version) : data.release?.version;
   const latest = history.find((h) => h.version === version) ?? history[0];
   const whatsNew = latest?.notes || app.whatsNew || "";
   const updated = latest?.date ?? (history.length === 0 ? app.updatedAt : null);
@@ -292,6 +295,7 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
             ? installArea(data, d, name, opts.preview === true)
             : shown.map((v) => html`<div ${tabbed ? html`role="tabpanel" id="panel-${v}" aria-labelledby="tab-${v}"` : ""} data-panel="${v ?? "none"}" ${tabbed && v !== current ? raw("hidden") : ""}>${installPanel(v, data, d, name, opts.pageUrl)}</div>`)
         }</div>
+        ${!blocked && (d.platform === "ios" || d.platform === "android") && data.release?.install.tvos ? televisionPanel(data.release, opts.pageUrl) : ""}
 
         <section class="store-section">
           <h2>Preview</h2>
@@ -442,6 +446,9 @@ function compat(data: LinkPage): string {
   const parts = [];
   if (i.ios) parts.push(appleTargets(i.ios.devices));
   if (i.android) parts.push("Android");
+  if (i.macos) parts.push("Mac");
+  if (i.windows) parts.push("Windows");
+  if (i.tvos) parts.push("Apple TV");
   if (i.pwa) parts.push("Web");
   return parts.join(", ");
 }
@@ -461,6 +468,12 @@ function ctaArea(data: LinkPage, d: Detected, name: string): Raw {
     if (install.pwa) return html`<a class="btn get" href="${install.pwa}">Open</a><span class="small muted">web app</span>`;
     return html`<span class="pill">Not for Android yet</span>`;
   }
+  if (d.platform === "macos" || d.platform === "windows") {
+    const native = install[d.platform];
+    if (native?.packages.length || (d.platform === "macos" && data.release.apple?.macos)) return html`<button class="btn get" data-get>Get</button><span class="small muted">See install options below</span>`;
+    if (install.pwa) return html`<a class="btn get" href="${install.pwa}">Open web app</a>`;
+    return html`<span class="pill">No compatible download available</span>`;
+  }
   return html`<button class="btn get" data-get>Get</button><span class="small muted">See the versions below</span>`;
 }
 
@@ -479,9 +492,11 @@ function installArea(data: LinkPage, d: Detected, name: string, preview: boolean
 // One version's install steps: on the matching device they install, on a computer they point to the device.
 function installPanel(view: ViewKind | null, data: LinkPage, d: Detected, name: string, pageUrl: string): Raw {
   const install = data.release!.install;
-  const deviceWord = d.platform === "android" ? "Android" : d.device;
+  const deviceWord = d.platform === "macos" ? "Mac" : d.platform === "windows" ? "Windows" : d.platform === "other" ? "this device" : d.platform === "android" ? "Android" : d.device;
   if (view === null) return html`<div class="install-card"><h3>Not on ${deviceWord} yet</h3><p class="muted">There is no ${deviceWord} version of ${name} at the moment.</p></div>`;
-  const remote = d.platform === "other";
+  if (view === "macos" || view === "windows") return desktopPanel(data.release!, view, d.platform === view);
+  if (view === "tvos") return televisionPanel(data.release!, pageUrl);
+  const remote = d.platform === "other" || d.platform === "macos" || d.platform === "windows";
   if (view === "web") return remote ? webOnComputer(install.pwa!, name) : pwaSteps(install.pwa!, d.platform);
   if (remote) return remoteCard(view, install, pageUrl, data.release!.testflightVersion ?? null, data.release!.version);
   if (view === "android") return androidSteps(install.android!.apk, name);

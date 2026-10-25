@@ -82,6 +82,8 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
   }
 
   if (p[0] === "build" && p.length === 3 && p[2] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1]);
+  if (p[0] === "build" && p.length === 4 && p[3] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1], p[2]);
+  if (p[0] === "build" && p.length === 5 && p[3] === "testflight" && (p[4] === "upload" || p[4] === "commit") && m === "POST") return buildTestflight(request, env, deps, p[1], p[4], p[2]);
   if (p[0] === "build" && p.length === 4 && p[2] === "testflight" && (p[3] === "upload" || p[3] === "commit") && m === "POST") return buildTestflight(request, env, deps, p[1], p[3]);
 
   if (p[0] === "dev") {
@@ -107,6 +109,9 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
       if (p.length === 4 && p[3] === "testflight" && m === "GET") return dev.testflightStatus(env, me, p[2]);
       if (p.length === 4 && p[3] === "testflight" && m === "POST") return dev.setUpAppTestflight(request, env, deps, me, p[2]);
       if (p.length === 5 && p[3] === "testflight" && p[4] === "build" && m === "POST") return dev.requestAppBuild(env, deps, me, p[2]);
+      if (p.length === 5 && p[3] === "testflight" && m === "GET") return dev.testflightStatus(env, me, p[2], p[4]);
+      if (p.length === 5 && p[3] === "testflight" && m === "POST") return dev.setUpAppTestflight(request, env, deps, me, p[2], p[4]);
+      if (p.length === 6 && p[3] === "testflight" && p[5] === "build" && m === "POST") return dev.requestAppBuild(env, deps, me, p[2], p[4]);
     }
     if (p[1] === "links" && p.length === 4 && p[3] === "revoke" && m === "POST") return dev.revokeLink(env, deps, me, p[2], false);
     if (p[1] === "links" && p.length === 3 && m === "DELETE") return dev.revokeLink(env, deps, me, p[2], true);

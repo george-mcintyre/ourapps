@@ -27,9 +27,13 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 - Every page, document and public file carries "Copyright Level N Ltd 2026" (site footers via
   `storeFrame` and `shell`, plus README, CONTRACT.md, agents.md). Keep it when adding pages.
 - Public example content uses the invented "Poker Night" app, never a real app name.
+- George's physical iPhones and iPads install and update through TestFlight only; Developer Mode is off. Do not install local builds on them. Simulator builds are separate.
 - User-facing text (site, guide, reference, agents.md, CONTRACT.md, README, SECURITY, messages) states only what is: no history, no "still", "older", "now", "no longer offered", no announced changes, no warnings about roads not taken. Changelogs and the example app's invented release notes are the exception. Owner's standing rule.
 
 ## Where to change X
+
+- Apple platform routing: `worker/src/apple-platform.ts` validates `ios`, `macos`, `tvos`; explicit `/api/build/:app/:platform/signing` and `/testflight/{upload,commit}`. Legacy build routes are iOS-only aliases. `worker/migrations/0014_apple_platforms.sql` stores separate platform state and installer certificates; Mac installer keys use the encrypted `installerSigningKey` field. Mac setup defaults to Catalyst (`MAC_CATALYST_APP_STORE`); native Mac is `MAC_APP_STORE`; TV is `TVOS_APP_STORE`. Console setup/status: `/api/dev/apps/:id/testflight/:platform`. Real signed export/upload and tester availability require platform-specific verification.
+- Desktop delivery: `shared/src/desktop.ts` and `manifest.ts` validate package and Apple target declarations; `worker/src/flow.ts` signs `.dmg`/`.exe` downloads, `routes/public.ts` streams them; `site/src/desktop.ts` renders package requirements and Apple TV instructions. `release.apple` and `/latest.apple` expose only each platform's approved version and open invitation. Declaring a target does not make TestFlight installable. Direct installer updates use `/latest.macos` and `.windows` package metadata, independently of TestFlight approval.
 
 - Routes: `worker/src/index.ts`. Handlers: `worker/src/routes/{public,build,dev}.ts`.
 - Sign-in and sessions: `worker/src/auth.ts`. Encrypted credentials: `worker/src/secrets.ts`, `worker/src/crypto.ts`.
