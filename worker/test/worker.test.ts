@@ -66,7 +66,7 @@ describe("share links and public pages", () => {
         windows: { packages: [{ ...base, format: "exe", url: "https://api.github.com/repos/o/skull/releases/assets/81" }] },
       } }),
       "GET api.github.com/repos/o/skull/releases/assets/80": () => new Response(new Uint8Array([0, 255, 1, 128])),
-      "GET api.github.com/repos/o/skull/releases/assets/81": () => new Response(new Uint8Array([77, 90, 0, 255])),
+      "GET api.github.com/repos/o/skull/releases/assets/81": () => new Response(new Uint8Array([77, 90, 0, 255]), { headers: { "Content-Disposition": 'attachment; filename="Poker-Night-3.0-x64.exe"' } }),
     });
     const d = { ...deps, fetch };
     const body = await (await handle(api(null, "GET", `/api/public/links/${linkId}`), env, d)).json() as { release: { install: Record<string, { packages: { url: string }[] }> } };
@@ -74,7 +74,7 @@ describe("share links and public pages", () => {
       const url = body.release.install[platform].packages[0].url;
       expect(url).toMatch(new RegExp(`^${BASE}/dl/`));
       const got = await handle(new Request(url), env, d);
-      expect(got.headers.get("Content-Disposition")).toBe(`attachment; filename="app.${format}"`);
+      expect(got.headers.get("Content-Disposition")).toBe(`attachment; filename="${format === "exe" ? "Poker-Night-3.0-x64.exe" : "app.dmg"}"`);
       expect([...new Uint8Array(await got.arrayBuffer())]).toEqual(bytes);
       expect(calls.at(-1)!.headers.get("Authorization")).toBe(`Bearer ${GH_TOKEN}`);
       const altered = url.slice(0, -4) + "bad!";

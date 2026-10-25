@@ -2,6 +2,7 @@
 import { SCREENSHOT_PLATFORMS, type ScreenshotSets } from "@my/store-shared";
 import { renderSVG } from "uqr";
 import { Db, type AppRow, type Developer, type LinkRow } from "../db.js";
+import { downloadDisposition } from "../download-filename.js";
 import type { Deps, Env } from "../env.js";
 import { appleClient, dlUrl, signManifestLinks } from "../flow.js";
 import { loadHistory } from "../history.js";
@@ -215,6 +216,6 @@ export async function serveArtefact(env: Env, deps: Deps, token: string): Promis
   const contentTypes = { apk: "application/vnd.android.package-archive", dmg: "application/x-apple-diskimage", exe: "application/vnd.microsoft.portable-executable" };
   return new Response(upstream.body, {
     status: 200,
-    headers: { "Content-Type": contentTypes[link.kind], "Content-Disposition": `attachment; filename="app.${link.kind}"`, "Cache-Control": "no-store" },
+    headers: { "Content-Type": contentTypes[link.kind], "Content-Disposition": link.kind === "apk" ? 'attachment; filename="app.apk"' : downloadDisposition(upstream.headers.get("Content-Disposition"), link.url, link.kind), "Cache-Control": "no-store" },
   });
 }
