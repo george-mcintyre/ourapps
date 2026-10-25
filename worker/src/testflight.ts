@@ -6,7 +6,9 @@ import type { Deps, Env } from "./env.js";
 import { appleClient } from "./flow.js";
 import { dispatchEvent } from "./github.js";
 import { HttpError } from "./http.js";
-import { appleReady, loadSecrets, secretsSummary } from "./secrets.js";
+import { appleReady, loadSecrets, saveSecrets, secretsSummary } from "./secrets.js";
+import { profileType } from "./apple-platform.js";
+import { signingRequest } from "./signing.js";
 
 export const BETA_GROUP = "Friends (ourapps)";
 // A build stops working 90 days after upload; a new one is asked for this long before.
@@ -56,12 +58,14 @@ export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app:
   const certificate = (await db.signingCertificate(dev.id))!;
   const apple = appleClient(env, deps, await loadSecrets(env, dev.id, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   try {
+    if (app.platform === "macos") await ensureInstallerSigning(env, deps, dev.id, apple);
     // Registered first, so the bundle ID is in App Store Connect's list when the developer adds the app.
-    const bundleRes = await apple.ensureBundleId(app.bundleId, app.name);
+    const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac);
     const store = await apple.findStoreApp(app.bundleId);
     if (!store) return "store-app";
-    const profile = await apple.ensureStoreProfile(storeProfileName(app.name), bundleRes, certificate.certificateId);
-    const group = await apple.ensureBetaGroup(store.id, BETA_GROUP);
+    const name = platformProfileName(app);
+    const profile = await apple.ensureStoreProfile(name, bundleRes, certificate.certificateId, profileType(app.platform ?? "ios", app.nativeMac));
+    const group = await apple.ensureBetaGroup(store.id, app.platform && app.platform !== "ios" ? `${BETA_GROUP} ${app.platform}` : BETA_GROUP);
     await apple.setBetaReviewDetails(store.id, contact, "Shared privately with friends and family through ourapps.app. No sign-in is needed to use the app.");
     await apple.setBetaDescription(store.id, { description: app.description || app.tagline || app.name, feedbackEmail: contact.email });
     Object.assign(app, {
@@ -70,7 +74,7 @@ export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app:
       testflightUrl: group.publicLink ?? app.testflightUrl ?? null,
       storeProfileId: profile.id,
       storeProfileUuid: profile.uuid,
-      storeProfileName: storeProfileName(app.name),
+      storeProfileName: name,
       storeProfileBase64: profile.profileContent,
     });
     await db.setAppTestflight(app);
@@ -81,11 +85,28 @@ export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app:
   }
 }
 
+const platformProfileName = (app: AppRow) => app.platform && app.platform !== "ios" ? `${storeProfileName(app.name)} ${app.platform}${app.nativeMac ? " native" : ""}` : storeProfileName(app.name);
+
+export async function ensureInstallerSigning(env: Env, deps: Deps, developerId: string, apple: AppleClient): Promise<void> {
+  const db = Db.from(env);
+  const certificate = await db.signingCertificate(developerId, true);
+  const summary = await secretsSummary(env, developerId);
+  if (certificate && summary.installerSigningKey && (!certificate.expirationDate || Date.parse(certificate.expirationDate) > deps.now().getTime())) return;
+  const generated = await signingRequest("ourapps Mac Installer");
+  const secrets = await loadSecrets(env, developerId);
+  secrets.installerSigningKey = generated.privateKey;
+  secrets.savedAt = { ...secrets.savedAt, installerSigningKey: deps.now().toISOString() };
+  const made = await apple.createDistributionCertificate(generated.csr, "MAC_INSTALLER_DISTRIBUTION");
+  await saveSecrets(env, developerId, secrets, deps.now());
+  await db.putSigningCertificate({ developerId, certificateId: made.id, name: made.name, serialNumber: made.serialNumber, certificateBase64: made.certificateContent, expirationDate: made.expirationDate, createdAt: deps.now().toISOString() }, true);
+}
+
 // After a new certificate, an app already on TestFlight gets its App Store profile made again with it.
 export async function renewStoreProfile(env: Env, apple: AppleClient, app: AppRow, certificateId: string): Promise<void> {
-  const bundleRes = await apple.ensureBundleId(app.bundleId, app.name);
-  const profile = await apple.ensureStoreProfile(storeProfileName(app.name), bundleRes, certificateId);
-  Object.assign(app, { storeProfileId: profile.id, storeProfileUuid: profile.uuid, storeProfileName: storeProfileName(app.name), storeProfileBase64: profile.profileContent });
+  const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac);
+  const name = platformProfileName(app);
+  const profile = await apple.ensureStoreProfile(name, bundleRes, certificateId, profileType(app.platform ?? "ios", app.nativeMac));
+  Object.assign(app, { storeProfileId: profile.id, storeProfileUuid: profile.uuid, storeProfileName: name, storeProfileBase64: profile.profileContent });
   await Db.from(env).setAppTestflight(app);
 }
 
@@ -94,19 +115,21 @@ export async function reserveUpload(env: Env, deps: Deps, app: AppRow, body: { v
   if (!app.ascAppId) throw new HttpError(409, "TestFlight is not set up for this app; the developer sets it up on the app's page in ourapps");
   const version = typeof body.version === "string" ? body.version.trim() : "";
   const buildNumber = typeof body.buildNumber === "string" ? body.buildNumber.trim() : "";
-  const fileName = typeof body.fileName === "string" && /\.ipa$/i.test(body.fileName) ? body.fileName : "";
+  const extension = app.platform === "macos" ? ".pkg" : ".ipa";
+  const fileName = typeof body.fileName === "string" && body.fileName.toLowerCase().endsWith(extension) ? body.fileName : "";
   const fileSize = typeof body.fileSize === "number" && Number.isInteger(body.fileSize) && body.fileSize > 0 ? body.fileSize : 0;
-  if (!version || !buildNumber || !fileName || !fileSize) throw new HttpError(400, "version, buildNumber, fileName (.ipa) and fileSize are required");
+  if (!version || !buildNumber || !fileName || !fileSize) throw new HttpError(400, `version, buildNumber, fileName (${extension}) and fileSize are required`);
   const apple = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   let reserved: Awaited<ReturnType<AppleClient["reserveBuildUpload"]>>;
   try {
-    reserved = await apple.reserveBuildUpload(app.ascAppId, version, buildNumber, fileName, fileSize);
+    reserved = await apple.reserveBuildUpload(app.ascAppId, version, buildNumber, fileName, fileSize, app.platform ?? "ios");
   } catch (err) {
     throw new HttpError(502, err instanceof Error ? err.message : String(err));
   }
   const now = deps.now().toISOString();
   await Db.from(env).insertTestflightBuild({
     appId: app.id,
+    platform: app.platform ?? "ios",
     version,
     buildNumber,
     uploadId: reserved.uploadId,
@@ -126,7 +149,7 @@ export async function commitUpload(env: Env, deps: Deps, app: AppRow, body: { up
   const md5 = typeof body.md5 === "string" && /^[0-9a-f]{32}$/i.test(body.md5) ? body.md5.toLowerCase() : "";
   if (!fileId || !md5) throw new HttpError(400, "uploadFileId and md5 (32 hex characters) are required");
   const db = Db.from(env);
-  const row = await db.testflightBuild(app.id, fileId);
+  const row = await db.testflightBuild(app.id, fileId, app.platform ?? "ios");
   if (!row) throw new HttpError(404, "no upload with that id for this app");
   const apple = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   try {
@@ -156,7 +179,7 @@ export async function advanceBuild(apple: AppleClient, app: AppRow, row: Testfli
       return;
     }
   }
-  const build = await apple.findBuild(app.ascAppId!, row.version, row.buildNumber);
+  const build = await apple.findBuild(app.ascAppId!, row.version, row.buildNumber, app.platform ?? "ios");
   if (!build) return;
   row.buildId = build.id;
   row.expiresAt = build.expirationDate;
@@ -267,7 +290,7 @@ export async function refreshApprovedVersions(env: Env, deps: Deps, app: AppRow)
   if (!app.ascAppId || !app.betaGroupId) return;
   if (app.testflightCheckedAt && deps.now().getTime() - Date.parse(app.testflightCheckedAt) < 60_000) return;
   const db = Db.from(env);
-  const pending = await db.pendingTestflightBuilds(app.id);
+  const pending = await db.pendingTestflightBuilds(app.id, app.platform ?? "ios");
   if (pending.length === 0) return;
   try {
     const apple = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
@@ -293,13 +316,14 @@ export async function requestBuild(env: Env, deps: Deps, app: AppRow, reason: st
   let error: string | null = null;
   try {
     const secrets = await loadSecrets(env, app.developerId, ["githubToken"]);
-    await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason });
+    await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason, ...(app.platform && app.platform !== "ios" ? { platform: app.platform } : {}) });
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   }
   app.buildRequestedAt = at;
   app.buildRequestError = error;
-  await Db.from(env).setBuildRequest(app.id, at, error);
+  if (app.platform && app.platform !== "ios") await Db.from(env).setAppTestflight(app);
+  else await Db.from(env).setBuildRequest(app.id, at, error);
 }
 
 // One app, now: moves its builds on and reads its invitation page. Used by the console and the schedule.
@@ -307,7 +331,7 @@ export async function refreshTestflight(env: Env, deps: Deps, app: AppRow, apple
   if (!app.ascAppId || !app.betaGroupId) return;
   const db = Db.from(env);
   const client = apple ?? appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
-  for (const row of (await db.pendingTestflightBuilds(app.id)).slice(0, 3)) await advanceOne(db, deps, client, app, row);
+  for (const row of (await db.pendingTestflightBuilds(app.id, app.platform ?? "ios")).slice(0, 3)) await advanceOne(db, deps, client, app, row);
   await checkLink(env, deps, client, app);
 }
 
@@ -330,13 +354,12 @@ async function checkLink(env: Env, deps: Deps, apple: AppleClient, app: AppRow):
       await db.setAppTestflight(app);
     }
   }
-  if (!app.testflightUrl) return;
-  const state = await checkInvitation(deps, app.testflightUrl);
+  const state = app.testflightUrl ? await checkInvitation(deps, app.testflightUrl) : null;
   const at = deps.now().toISOString();
-  if (state === null) return;
-  app.testflightLinkState = state;
+  if (state !== null) app.testflightLinkState = state;
   app.testflightCheckedAt = at;
-  await db.setLinkState(app.id, state, at);
+  if (app.platform && app.platform !== "ios") await db.setAppTestflight(app);
+  else await db.setLinkState(app.id, app.testflightLinkState ?? null, at);
 }
 
 // Run on a schedule: move pending builds on, read each invitation page, and ask for a fresh build
@@ -350,9 +373,11 @@ export async function tickTestflight(env: Env, deps: Deps): Promise<void> {
     return clients.get(devId)!;
   };
   for (const row of (await db.pendingTestflightBuilds()).slice(0, 4)) {
-    const app = apps.get(row.appId) ?? (await db.appById(row.appId));
+    const key = `${row.appId}:${row.platform ?? "ios"}`;
+    const base = await db.appById(row.appId);
+    const app = apps.get(key) ?? (base ? await db.platformApp(base, row.platform ?? "ios") : null);
     if (!app?.ascAppId || !app.betaGroupId) continue;
-    apps.set(app.id, app);
+    apps.set(key, app);
     try {
       await advanceOne(db, deps, await clientFor(app.developerId), app, row);
     } catch (err) {
@@ -375,9 +400,9 @@ async function refreshIfExpiring(env: Env, deps: Deps, db: Db, apple: AppleClien
   const now = deps.now().getTime();
   const week = 7 * 86_400_000;
   if (app.buildRequestedAt && now - Date.parse(app.buildRequestedAt) < week) return;
-  const recent = (await db.testflightBuilds(app.id, 1))[0];
+  const recent = (await db.testflightBuilds(app.id, 1, app.platform ?? "ios"))[0];
   if (!recent || now - Date.parse(recent.createdAt) < week) return;
-  const live = await apple.latestLiveBuild(app.ascAppId!);
+  const live = await apple.latestLiveBuild(app.ascAppId!, app.platform ?? "ios");
   const expires = live?.expirationDate ? Date.parse(live.expirationDate) : null;
   if (live && expires !== null && expires - now > REFRESH_DAYS * 86_400_000) return;
   await requestBuild(env, deps, app, "testflight-expiry");
@@ -389,7 +414,7 @@ export const RELEASE_EVENT = "my-store-release";
 export type TestflightStage = "no-build" | "waiting-for-upload" | "processing" | "in-review" | "approved" | "open" | "link-closed" | "rejected" | "failed";
 
 export function testflightStage(app: AppRow, builds: TestflightBuildRow[]): TestflightStage {
-  if (app.testflightLinkState === "open") return "open";
+  if (app.testflightLinkState === "open" && builds.some((b) => b.state === "open")) return "open";
   const latest = builds[0];
   const requestedAfter = app.buildRequestedAt && (!latest || app.buildRequestedAt > latest.createdAt);
   if (requestedAfter && !app.buildRequestError) return "waiting-for-upload";

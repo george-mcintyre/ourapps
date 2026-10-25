@@ -55,6 +55,34 @@ describe("apps", () => {
 });
 
 describe("share links and public pages", () => {
+  it("streams desktop packages through expiring signed downloads", async () => {
+    await saveAppleSecrets(env, deps, cookie);
+    const { linkId } = await createSkull(env, deps, cookie);
+    const base = { architectures: ["arm64", "x64"], minOsVersion: "14.0", signing: "unsigned" };
+    const { fetch, calls } = fakeFetch({
+      ...githubRoutes(),
+      "GET api.github.com/repos/o/skull/releases/assets/1": () => jsonRes({ ...manifest, install: { ...manifest.install,
+        macos: { packages: [{ ...base, format: "dmg", notarization: "not-notarized", url: "https://api.github.com/repos/o/skull/releases/assets/80" }] },
+        windows: { packages: [{ ...base, format: "exe", url: "https://api.github.com/repos/o/skull/releases/assets/81" }] },
+      } }),
+      "GET api.github.com/repos/o/skull/releases/assets/80": () => new Response(new Uint8Array([0, 255, 1, 128])),
+      "GET api.github.com/repos/o/skull/releases/assets/81": () => new Response(new Uint8Array([77, 90, 0, 255])),
+    });
+    const d = { ...deps, fetch };
+    const body = await (await handle(api(null, "GET", `/api/public/links/${linkId}`), env, d)).json() as { release: { install: Record<string, { packages: { url: string }[] }> } };
+    for (const [platform, format, bytes] of [["macos", "dmg", [0, 255, 1, 128]], ["windows", "exe", [77, 90, 0, 255]]] as const) {
+      const url = body.release.install[platform].packages[0].url;
+      expect(url).toMatch(new RegExp(`^${BASE}/dl/`));
+      const got = await handle(new Request(url), env, d);
+      expect(got.headers.get("Content-Disposition")).toBe(`attachment; filename="app.${format}"`);
+      expect([...new Uint8Array(await got.arrayBuffer())]).toEqual(bytes);
+      expect(calls.at(-1)!.headers.get("Authorization")).toBe(`Bearer ${GH_TOKEN}`);
+      const altered = url.slice(0, -4) + "bad!";
+      expect((await handle(new Request(altered), env, d)).status).toBe(403);
+    }
+    deps.advance(3_601_000);
+    for (const platform of ["macos", "windows"]) expect((await handle(new Request(body.release.install[platform].packages[0].url), env, d)).status).toBe(403);
+  });
   it("serves the install page with signed artefact links", async () => {
     await saveAppleSecrets(env, deps, cookie);
     const { linkId } = await createSkull(env, deps, cookie);
@@ -409,7 +437,7 @@ describe("API keys and agent endpoints", () => {
     const res = await handle(api(null, "GET", `/api/public/links/${linkId}/latest`), env, deps);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { name: string; version: string; testflightUrl: string; android: { apkUrl: string }; pwa: null; linksExpireAt: string };
-    expect(body).toMatchObject({ name: "Skull", version: "0.1.0", pwa: null, testflightUrl: "https://testflight.apple.com/join/FIXTURE", linksExpireAt: "2026-10-16T11:00:00.000Z" });
+    expect(body).toMatchObject({ name: "Skull", version: "0.1.0", pwa: null, testflightUrl: null, testflightVersion: null, apple: { ios: null, macos: null, tvos: null }, linksExpireAt: "2026-10-16T11:00:00.000Z" });
     expect(body).not.toHaveProperty("ios");
     expect(body.android.apkUrl).toMatch(new RegExp(`^${BASE}/dl/`));
     expect(await (await handle(new Request(body.android.apkUrl), env, deps)).text()).toBe("APKBYTES");

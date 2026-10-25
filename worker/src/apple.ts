@@ -1,5 +1,6 @@
 // App Store Connect API: ES256 tokens, the signing certificate, App IDs, profiles and TestFlight.
 import type { Deps, Env } from "./env.js";
+import { applePlatformName, type ApplePlatform } from "./apple-platform.js";
 
 export interface AppleCredentials {
   issuerId: string;
@@ -83,13 +84,14 @@ export class AppleClient {
   }
 
   // Returns Apple's id for an explicit App ID, creating it when it does not exist yet.
-  async ensureBundleId(identifier: string, appName: string): Promise<string> {
-    const res = await this.call<{ data: Resource<{ identifier: string }>[] }>("GET", `/v1/bundleIds?filter[identifier]=${encodeURIComponent(identifier)}&limit=200`);
-    const found = res.data.find((b) => b.attributes.identifier === identifier);
+  async ensureBundleId(identifier: string, appName: string, nativeMac = false): Promise<string> {
+    const res = await this.call<{ data: Resource<{ identifier: string; platform?: string }>[] }>("GET", `/v1/bundleIds?filter[identifier]=${encodeURIComponent(identifier)}&limit=200`);
+    const expected = nativeMac ? "MAC_OS" : "IOS";
+    const found = res.data.find((b) => b.attributes.identifier === identifier && (b.attributes.platform === "UNIVERSAL" || b.attributes.platform === expected || (!nativeMac && b.attributes.platform === undefined)));
     if (found) return found.id;
     const name = `ourapps ${appName}`.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
     const created = await this.call<{ data: Resource }>("POST", "/v1/bundleIds", {
-      data: { type: "bundleIds", attributes: { identifier, name, platform: "IOS" } },
+      data: { type: "bundleIds", attributes: { identifier, name, platform: nativeMac ? "MAC_OS" : "IOS" } },
     });
     return created.data.id;
   }
@@ -104,18 +106,18 @@ export class AppleClient {
   }
 
   // An App Store profile for TestFlight builds, made again when it lacks the certificate.
-  async ensureStoreProfile(name: string, bundleIdRes: string, certificateId: string): Promise<{ id: string; uuid: string; profileContent: string; expirationDate: string }> {
+  async ensureStoreProfile(name: string, bundleIdRes: string, certificateId: string, profileType = "IOS_APP_STORE"): Promise<{ id: string; uuid: string; profileContent: string; expirationDate: string }> {
     const old = await this.findProfileByName(name);
     const certs = asList(old?.relationships?.certificates?.data).map((c) => c.id);
     const attrs = old?.attributes as { profileType?: string; profileState?: string } | undefined;
-    if (old && certs.includes(certificateId) && attrs?.profileType === "IOS_APP_STORE" && attrs?.profileState !== "INVALID") {
+    if (old && certs.includes(certificateId) && attrs?.profileType === profileType && attrs?.profileState !== "INVALID" && Date.parse(old.attributes.expirationDate) > this.deps.now().getTime()) {
       return { id: old.id, uuid: old.attributes.uuid, profileContent: old.attributes.profileContent, expirationDate: old.attributes.expirationDate };
     }
     if (old) await this.call("DELETE", `/v1/profiles/${old.id}`);
     const res = await this.call<{ data: Resource<{ uuid: string; profileContent: string; expirationDate: string }> }>("POST", "/v1/profiles", {
       data: {
         type: "profiles",
-        attributes: { name, profileType: "IOS_APP_STORE" },
+        attributes: { name, profileType },
         relationships: { bundleId: { data: { type: "bundleIds", id: bundleIdRes } }, certificates: { data: [{ type: "certificates", id: certificateId }] } },
       },
     });
@@ -173,12 +175,12 @@ export class AppleClient {
   }
 
   // Reserves an upload; the workflow sends the bytes straight to Apple with the returned operations.
-  async reserveBuildUpload(storeAppId: string, version: string, buildNumber: string, fileName: string, fileSize: number): Promise<{ uploadId: string; fileId: string; operations: UploadOperation[] }> {
+  async reserveBuildUpload(storeAppId: string, version: string, buildNumber: string, fileName: string, fileSize: number, platform: ApplePlatform = "ios"): Promise<{ uploadId: string; fileId: string; operations: UploadOperation[] }> {
     const upload = await this.call<{ data: Resource }>("POST", "/v1/buildUploads", {
-      data: { type: "buildUploads", attributes: { cfBundleShortVersionString: version, cfBundleVersion: buildNumber, platform: "IOS" }, relationships: { app: { data: { type: "apps", id: storeAppId } } } },
+      data: { type: "buildUploads", attributes: { cfBundleShortVersionString: version, cfBundleVersion: buildNumber, platform: applePlatformName(platform) }, relationships: { app: { data: { type: "apps", id: storeAppId } } } },
     });
     const file = await this.call<{ data: Resource<{ uploadOperations?: UploadOperation[] }> }>("POST", "/v1/buildUploadFiles", {
-      data: { type: "buildUploadFiles", attributes: { assetType: "ASSET", fileName, fileSize, uti: "com.apple.ipa" }, relationships: { buildUpload: { data: { type: "buildUploads", id: upload.data.id } } } },
+      data: { type: "buildUploadFiles", attributes: { assetType: "ASSET", fileName, fileSize, uti: platform === "macos" ? "com.apple.pkg" : "com.apple.ipa" }, relationships: { buildUpload: { data: { type: "buildUploads", id: upload.data.id } } } },
     });
     return { uploadId: upload.data.id, fileId: file.data.id, operations: file.data.attributes.uploadOperations ?? [] };
   }
@@ -195,10 +197,10 @@ export class AppleClient {
     return { state: st?.state ?? "UNKNOWN", errors: (st?.errors ?? []).map((e) => e.description ?? e.code ?? "error") };
   }
 
-  async findBuild(storeAppId: string, version: string, buildNumber: string): Promise<{ id: string; processingState: string; usesNonExemptEncryption: boolean | null; expirationDate: string | null; expired: boolean } | null> {
+  async findBuild(storeAppId: string, version: string, buildNumber: string, platform: ApplePlatform = "ios"): Promise<{ id: string; processingState: string; usesNonExemptEncryption: boolean | null; expirationDate: string | null; expired: boolean } | null> {
     const res = await this.call<{ data: Resource<{ processingState: string; usesNonExemptEncryption: boolean | null; expirationDate: string | null; expired?: boolean }>[] }>(
       "GET",
-      `/v1/builds?filter[app]=${storeAppId}&filter[version]=${encodeURIComponent(buildNumber)}&filter[preReleaseVersion.version]=${encodeURIComponent(version)}&limit=1`,
+      `/v1/builds?filter[app]=${storeAppId}&filter[version]=${encodeURIComponent(buildNumber)}&filter[preReleaseVersion.version]=${encodeURIComponent(version)}&filter[preReleaseVersion.platform]=${applePlatformName(platform)}&limit=1`,
     );
     const b = res.data[0];
     return b
@@ -228,8 +230,8 @@ export class AppleClient {
   }
 
   // The newest build that has not expired, to know when the next one is due.
-  async latestLiveBuild(storeAppId: string): Promise<{ id: string; expirationDate: string | null } | null> {
-    const res = await this.call<{ data: Resource<{ expirationDate: string | null }>[] }>("GET", `/v1/builds?filter[app]=${storeAppId}&filter[expired]=false&sort=-uploadedDate&limit=1`);
+  async latestLiveBuild(storeAppId: string, platform: ApplePlatform = "ios"): Promise<{ id: string; expirationDate: string | null } | null> {
+    const res = await this.call<{ data: Resource<{ expirationDate: string | null }>[] }>("GET", `/v1/builds?filter[app]=${storeAppId}&filter[preReleaseVersion.platform]=${applePlatformName(platform)}&filter[expired]=false&sort=-uploadedDate&limit=1`);
     const b = res.data[0];
     return b ? { id: b.id, expirationDate: b.attributes.expirationDate ?? null } : null;
   }
@@ -251,9 +253,9 @@ export class AppleClient {
   }
 
   // An Apple Distribution certificate signs the iPhone and iPad builds that go to TestFlight.
-  async createDistributionCertificate(csrPem: string): Promise<{ id: string; name: string; serialNumber: string; certificateContent: string; expirationDate: string | null }> {
+  async createDistributionCertificate(csrPem: string, certificateType: "DISTRIBUTION" | "MAC_INSTALLER_DISTRIBUTION" = "DISTRIBUTION"): Promise<{ id: string; name: string; serialNumber: string; certificateContent: string; expirationDate: string | null }> {
     const res = await this.call<{ data: Resource<{ name: string; serialNumber: string; certificateContent: string; expirationDate?: string }> }>("POST", "/v1/certificates", {
-      data: { type: "certificates", attributes: { certificateType: "DISTRIBUTION", csrContent: csrPem } },
+      data: { type: "certificates", attributes: { certificateType, csrContent: csrPem } },
     });
     const a = res.data.attributes;
     return { id: res.data.id, name: a.name, serialNumber: a.serialNumber, certificateContent: a.certificateContent, expirationDate: a.expirationDate ?? null };
