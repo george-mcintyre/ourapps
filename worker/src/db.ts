@@ -74,6 +74,8 @@ export interface AppRow {
   // What the public invitation page said when last checked, and when.
   testflightLinkState?: LinkState | null;
   testflightCheckedAt?: string | null;
+  iosOnMac?: number | null;
+  iosOnMacCheckedAt?: string | null;
   // When ourapps last asked the repository for a build, and why that failed if it did.
   buildRequestedAt?: string | null;
   buildRequestError?: string | null;
@@ -402,6 +404,10 @@ export class Db {
 
   async setLinkState(appId: string, state: LinkState | null, at: string): Promise<void> {
     await this.d1.prepare("UPDATE apps SET testflight_link_state = ?, testflight_checked_at = ? WHERE id = ?").bind(state, at, appId).run();
+  }
+
+  async setIosOnMac(appId: string, allowed: boolean | null, at: string): Promise<void> {
+    await this.d1.prepare("UPDATE apps SET ios_on_mac = ?, ios_on_mac_checked_at = ? WHERE id = ?").bind(allowed === null ? null : allowed ? 1 : 0, at, appId).run();
   }
 
   async setBuildRequest(appId: string, at: string, error: string | null): Promise<void> {

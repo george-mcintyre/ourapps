@@ -147,6 +147,12 @@ export class AppleClient {
     return res.data.attributes.publicLink ?? null;
   }
 
+  async iosOnMac(groupId: string): Promise<boolean | null> {
+    const res = await this.call<{ data: Resource<{ iosBuildsAvailableForAppleSiliconMac?: boolean }> }>("GET", `/v1/betaGroups/${groupId}?fields[betaGroups]=iosBuildsAvailableForAppleSiliconMac`);
+    const value = res.data.attributes.iosBuildsAvailableForAppleSiliconMac;
+    return typeof value === "boolean" ? value : null;
+  }
+
   // Who Apple's beta review contacts, and the description testers see; both are required for review.
   async setBetaReviewDetails(storeAppId: string, contact: { firstName: string; lastName: string; email: string; phone: string }, notes: string): Promise<void> {
     const res = await this.call<{ data: Resource }>("GET", `/v1/apps/${storeAppId}/betaAppReviewDetail`);

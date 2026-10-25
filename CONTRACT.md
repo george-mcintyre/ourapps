@@ -41,6 +41,8 @@ Apple signing, uploads, review progress, invitations and approved versions are s
 
 Platform-specific build addresses:
 
+`release.apple` and `/latest.apple` also include `iosOnMac`, null or `{ version, testflightUrl }`. It describes the iPhone/iPad compatibility version for Macs with Apple silicon, independently of native/Catalyst `macos`. It requires a ready external iOS build and invitation plus Apple's beta-group `iosBuildsAvailableForAppleSiliconMac` flag set to true. A false, unknown or unavailable flag exposes no compatibility invitation. This is not an Intel Mac claim or a Mac signing-profile selection.
+
 ```
 GET|HEAD /api/build/:app/:platform/signing
 POST /api/build/:app/:platform/testflight/upload

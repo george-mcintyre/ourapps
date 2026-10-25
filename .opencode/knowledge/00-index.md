@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- iPhone/iPad compatibility on Apple-silicon Mac is separate from Catalyst/native Mac. `release.apple.iosOnMac` and `/latest.apple.iosOnMac` require iOS readiness plus Apple's beta-group permission flag; `apps.ios_on_mac` and `ios_on_mac_checked_at` cache that flag for one minute (migration 0015). `site/src/desktop.ts` labels the compatibility invitation explicitly. No Intel claim or `macos` readiness fallback.
+
 - Apple platform routing: `worker/src/apple-platform.ts` validates `ios`, `macos`, `tvos`; explicit `/api/build/:app/:platform/signing` and `/testflight/{upload,commit}`. Legacy build routes are iOS-only aliases. `worker/migrations/0014_apple_platforms.sql` stores separate platform state and installer certificates; Mac installer keys use the encrypted `installerSigningKey` field. Mac setup defaults to Catalyst (`MAC_CATALYST_APP_STORE`); native Mac is `MAC_APP_STORE`; TV is `TVOS_APP_STORE`. Console setup/status: `/api/dev/apps/:id/testflight/:platform`. Real signed export/upload and tester availability require platform-specific verification.
 - Desktop delivery: `shared/src/desktop.ts` and `manifest.ts` validate package and Apple target declarations; `worker/src/flow.ts` signs `.dmg`/`.exe` downloads, `routes/public.ts` streams them; `site/src/desktop.ts` renders package requirements and Apple TV instructions. `release.apple` and `/latest.apple` expose only each platform's approved version and open invitation. Declaring a target does not make TestFlight installable. Direct installer updates use `/latest.macos` and `.windows` package metadata, independently of TestFlight approval.
 

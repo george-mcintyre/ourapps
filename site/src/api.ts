@@ -57,7 +57,7 @@ export interface Install {
 }
 
 export interface Release {
-  apple?: Partial<Record<"ios" | "macos" | "tvos", { version: string; testflightUrl: string } | null>>;
+  apple?: Partial<Record<"ios" | "macos" | "tvos" | "iosOnMac", { version: string; testflightUrl: string } | null>>;
   version: string;
   minPlayers: number;
   maxPlayers: number;

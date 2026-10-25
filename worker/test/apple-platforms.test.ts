@@ -40,6 +40,20 @@ async function configured(platform: "ios" | "macos" | "tvos") {
 const buildRequest = (appId: string, platform: string, step: string, body?: unknown) => api(null, step === "signing" ? "GET" : "POST", `/api/build/${appId}/${platform}/${step === "signing" ? step : `testflight/${step}`}`, body, { Authorization: `Bearer ${token}` });
 
 describe("Apple platform isolation", () => {
+  it.each([true, false, undefined])("gates the iOS-on-Mac invitation on Apple's explicit group flag: %s", async flag => {
+    await configured("ios");
+    await Db.from(env).insertTestflightBuild({ appId: app.id, platform: "ios", version: "1.2", buildNumber: "8", uploadId: null, uploadFileId: null, buildId: "ios-build", whatsNew: null, state: "open", message: null, createdAt: deps.now().toISOString(), updatedAt: deps.now().toISOString() });
+    const stub = fakeFetch({ ...githubRoutes(), [`GET ${apple("/v1/betaGroups/group-ios")}`]: () => jsonRes({ data: { id: "group-ios", attributes: { iosBuildsAvailableForAppleSiliconMac: flag } } }) });
+    const d = { ...deps, fetch: stub.fetch };
+    const view = async (suffix = "/latest") => await (await handle(api(null, "GET", `/api/public/links/${linkId}${suffix}`), env, d)).json() as { apple: Record<string, unknown>; release?: { apple: Record<string, unknown> } };
+    const expected = flag === true ? { version: "1.2", testflightUrl: "https://testflight.apple.com/join/ios" } : null;
+    expect((await view()).apple).toMatchObject({ iosOnMac: expected, macos: null, tvos: null });
+    expect((await view("")).release!.apple).toMatchObject({ iosOnMac: expected, macos: null });
+    expect(stub.calls.filter(c => c.url.includes("/v1/betaGroups/group-ios"))).toHaveLength(1);
+    await Db.from(env).setLinkState(app.id, "not-accepting", deps.now().toISOString());
+    expect((await view()).apple).toMatchObject({ ios: null, iosOnMac: null, macos: null });
+  });
+
   it("reuses a universal bundle identifier for phone and native Mac profiles", async () => {
     const secrets = await loadSecrets(env, app.developerId);
     const stub = fakeFetch({ [`GET ${apple("/v1/bundleIds")}`]: () => jsonRes({ data: [{ id: "universal", attributes: { identifier: app.bundleId, platform: "UNIVERSAL" } }] }) });
