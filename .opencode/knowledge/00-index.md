@@ -32,7 +32,7 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
-- GitHub build status: `loadBuildStatus` in `worker/src/github.ts`, exposed as `buildStatus` by TestFlight views; `site/src/buildStatus.ts` renders and refreshes it every visible 30 seconds. Requires Actions read on the developer token, separately from Contents write for dispatch. Named Workers Cache API `ourapps-build-status` caches sanitized state for 15 seconds and successful historical durations for 15 minutes, scoped by developer/app/platform/repo/credential revision. Request/build-number matching is approximate; workflow Complete is not Apple readiness.
+- GitHub build status: `loadBuildStatus` in `worker/src/github.ts`, exposed as `buildStatus` by TestFlight views; `site/src/buildStatus.ts` refreshes every visible 30 seconds. iOS matches `release.yml`; Mac/TV require `apple-testflight.yml` and canonical `Apple TestFlight macos|tvos VERSION (BUILD)` titles. `platformVerified` identifies only the title's platform, not app/request identity. Successful runs without matching upload evidence display Finished without upload. Cache API stores sanitized status15s/timings15min. Mac/TV dispatch uses Actions write, iOS uses Contents write, status uses Actions read; atomic per-app/platform/version build reservations are in migration0016.
 
 - iPhone/iPad compatibility on Apple-silicon Mac is separate from Catalyst/native Mac. `release.apple.iosOnMac` and `/latest.apple.iosOnMac` require iOS readiness plus Apple's beta-group permission flag; `apps.ios_on_mac` and `ios_on_mac_checked_at` cache that flag for one minute (migration 0015). `site/src/desktop.ts` labels the compatibility invitation explicitly. No Intel claim or `macos` readiness fallback.
 

@@ -183,8 +183,9 @@ export interface BuildStatus {
   runNumber: number | null;
   runAttempt: number | null;
   conclusion: string | null;
-  correlation: "none" | "request-time" | "build-number" | "workflow-only";
+  correlation: "none" | "request-time" | "build-number" | "workflow-only" | "platform-title";
   platformVerified: boolean;
+  uploadReceived: boolean;
   startedAt: string | null;
   elapsedSeconds: number | null;
   expectedSeconds: number | null;

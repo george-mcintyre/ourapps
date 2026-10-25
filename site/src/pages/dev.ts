@@ -697,7 +697,12 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   }
 
   render();
-  watchBuildStatus(box, path);
+  watchBuildStatus(box, path, next => {
+    if (next.stage !== t.stage || next.needs !== t.needs || JSON.stringify(next.builds) !== JSON.stringify(t.builds)) {
+      t = next;
+      render();
+    }
+  });
   if (location.hash === "#testflight") box.scrollIntoView();
   addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onFocus);
@@ -706,7 +711,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   else schedule();
 }
 
-export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
+export function platformDeliveryStatus(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
   const name = platform === "macos" ? "Mac" : "Apple TV";
   const needs: Record<TestflightNeed, Raw> = {
     "bundle-id": html`Save the Apple bundle identifier under Build and publishing below. The default for this platform is the app's bundle identifier: <code>${app.bundleId}</code>.`,
@@ -715,15 +720,35 @@ export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", 
     "review-contact": html`Save your beta review contact in <a href="/dev/settings#review-contact">Settings</a>.`,
     "store-app": html`Open <a href="${ASC_APPS}" target="_blank" rel="noopener">App Store Connect</a>. For an existing app record, add the ${platform === "macos" ? "macOS" : "tvOS"} platform to that record. For a new record, choose that platform and bundle identifier <code>${t.storeApp?.bundleId ?? app.bundleId}</code>. Then check again.`,
   };
-  return html`<div class="card mt"><h2>${name} TestFlight</h2><p class="small muted">Separate setup and invitation for ${name}. Direct download packages are independent of TestFlight setup. ${platform === "macos" ? "Setup runs in your signed-in browser and provisions the Mac installer signing key on the server." : "The app must include an Apple TV build."}</p>
-    ${t.needs ? callout("info", needs[t.needs]) : t.stage ? html`<p>${pill(STAGE_PILL[t.stage][0], STAGE_PILL[t.stage][1])}</p>` : html`<p class="small">Enable ${name} TestFlight when your app supports this platform.</p>`}
-    ${t.setUp && t.stage !== "open" ? html`<p class="small muted">The repository must upload a ${name} build. Apple processes and reviews it before its matching invitation can open. Use Check with Apple to refresh this card.</p>` : ""}
+  if (t.needs) return callout("info", needs[t.needs]);
+  if (!t.stage) return html`<p class="small">Enable ${name} TestFlight when your app supports this platform.</p>`;
+  const latest = t.builds[0];
+  const version = latest ? `version ${latest.version} (build ${latest.buildNumber})` : "the build";
+  const waiting = t.stage === "no-build" || t.stage === "waiting-for-upload";
+  const messages: Record<TestflightStage, string> = {
+    "no-build": `No ${name} build has been uploaded to ourapps.`,
+    "waiting-for-upload": `No ${name} upload has arrived for this request. GitHub's matching platform run is shown below.`,
+    processing: `Apple is processing the ${name} upload for ${version}.`,
+    "in-review": `The ${name} upload for ${version} is with Apple's beta review${latest?.submittedAt ? `, submitted ${ago(latest.submittedAt)}` : ""}.`,
+    approved: `Apple approved the ${name} build; its invitation is not open yet.`,
+    "link-closed": `The ${name} build is available at Apple, but its public invitation is closed. Check the platform's testing group in App Store Connect.`,
+    open: `The ${name} invitation is open.`,
+    rejected: latest?.message || `Apple did not approve this ${name} build. Open App Store Connect for its review feedback.`,
+    failed: latest?.message || `The ${name} upload failed. Check the matching workflow run for its error.`,
+  };
+  return html`<p>${pill(waiting ? `Awaiting ${name} upload` : STAGE_PILL[t.stage][0], waiting ? "accent" : STAGE_PILL[t.stage][1])}</p><p class="small muted">${messages[t.stage]}</p>`;
+}
+
+export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
+  const name = platform === "macos" ? "Mac" : "Apple TV";
+  return html`<div class="card mt"><h2>${name} TestFlight</h2><p class="small muted">${platform === "macos" ? "Uses the selected Mac build type and its installer signing profile." : "Uses the Apple TV build and its testing group."}</p>
+    <div data-platform-delivery>${platformDeliveryStatus(app, platform, t)}</div>
     ${t.buildRequest?.error ? callout("bad", html`<p>Build request failed: ${t.buildRequest.error}</p>`) : ""}
     ${platform === "macos" ? html`<div class="field mt-s"><label for="mac-build-type">Mac build type</label><select id="mac-build-type" data-mac-build-type><option value="catalyst" ${t.profileType !== "MAC_APP_STORE" ? "selected" : ""}>Mac Catalyst: iPhone/iPad app built for Mac</option><option value="native" ${t.profileType === "MAC_APP_STORE" ? "selected" : ""}>Native macOS app target</option></select><div class="hint">Choose the type built by the app's Xcode target. Both run as Mac applications; they need different distribution profiles.</div>${t.setUp ? html`<p class="small">Configured signing: <b>${t.profileType === "MAC_APP_STORE" ? "Native macOS" : "Mac Catalyst"}</b>.</p><button type="button" class="btn sm secondary" data-platform-type>Apply build type and set up profile</button>` : ""}</div>` : ""}
     <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
     ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
     ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
-    <div data-github-status>${buildStatusCard(t.buildStatus)}</div>${buildTable(t)}<div data-platform-error></div></div>`;
+    <div data-github-status>${buildStatusCard(t.buildStatus)}</div><div data-platform-builds>${buildTable(t)}</div><div data-platform-error></div></div>`;
 }
 
 async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platform: "macos" | "tvos"): Promise<void> {
@@ -753,7 +778,15 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
     const type = box.querySelector<HTMLButtonElement>("[data-platform-type]");
     if (type) type.onclick = () => void act(type, "", true);
   };
-  try { render(await api<TestflightStatus>("GET", path)); watchBuildStatus(box, path); }
+  try {
+    render(await api<TestflightStatus>("GET", path));
+    watchBuildStatus(box, path, next => {
+      const delivery = box.querySelector<HTMLElement>("[data-platform-delivery]");
+      if (delivery) delivery.innerHTML = platformDeliveryStatus(app, platform, next).html;
+      const builds = box.querySelector<HTMLElement>("[data-platform-builds]");
+      if (builds) builds.innerHTML = buildTable(next).html;
+    });
+  }
   catch (err) { box.innerHTML = errorBox(err).html; }
 }
 
@@ -1052,7 +1085,7 @@ export async function settings(root: HTMLElement, note = "", signingNote?: { res
           <div class="about"><h3>GitHub token</h3><p>Lets the console read release assets from private repositories and ask them for fresh builds. <a href="/dev/guide#github-token">How to create one</a>.</p></div>
           <div>
             <div class="row wrap mb">${savedMarker(me.secrets.github, me.secrets.githubSavedAt, "githubToken")}</div>
-            <div class="field"><label>Fine-grained token</label><input type="text" name="githubToken" autocomplete="off" placeholder="${me.secrets.github ? "saved; paste a new one to replace" : "github_pat_..."}" /><div class="hint">Permissions on the app repositories: Contents, read and write, for releases and build requests; Actions, read, for workflow status and timing.</div></div>
+            <div class="field"><label>Fine-grained token</label><input type="text" name="githubToken" autocomplete="off" placeholder="${me.secrets.github ? "saved; paste a new one to replace" : "github_pat_..."}" /><div class="hint">Permissions on the app repositories: Contents read and write for releases and iPhone/iPad build requests; Actions read for status, or Actions read and write to request Mac/Apple TV workflows.</div></div>
           </div>
         </div>
 

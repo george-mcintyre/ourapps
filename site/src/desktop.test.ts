@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DesktopPackage } from "@my/store-shared";
 import type { Release, TestflightStatus } from "./api.js";
 import { desktopAvailability, desktopPanel, packageLabel, readyInvitation, televisionPanel } from "./desktop.js";
-import { platformTestflightCard } from "./pages/dev.js";
+import { platformDeliveryStatus, platformTestflightCard } from "./pages/dev.js";
 import { availableViews, chooseView, shapeFor, showTabs } from "./views.js";
 
 const pkg: DesktopPackage = { url: "https://ourapps.app/dl/mac", format: "dmg", architectures: ["arm64"], minOsVersion: "13", signing: "unsigned", notarization: "not-notarized" };
@@ -101,5 +101,12 @@ describe("desktop install choices", () => {
     expect(configured).toContain('value="native" selected');
     expect(configured).toContain("Apply build type and set up profile");
     expect(configured).toContain("Configured signing");
+    const waiting = platformDeliveryStatus({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", { ...status, setUp: true, needs: null, stage: "waiting-for-upload" }).html;
+    expect(waiting).toContain("Awaiting Mac upload");
+    expect(waiting).toContain("No Mac upload has arrived");
+    expect(waiting).not.toContain("Apple is processing");
+    const processing = platformDeliveryStatus({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", { ...status, setUp: true, needs: null, stage: "processing" }).html;
+    expect(processing).toContain("Apple is processing the Mac upload");
+    expect(processing).not.toContain("No Mac upload has arrived");
   });
 });
