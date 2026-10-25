@@ -255,9 +255,9 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
 
   const facts: Raw[] = [];
   if (data.release) facts.push(html`<div class="fact"><b>Version</b><span>${version}</span></div>`);
-  if (app.ageNote) facts.push(html`<div class="fact"><b>Age</b><span>${app.ageNote}</span></div>`);
+  if (app.ageNote) facts.push(html`<div class="fact"><b>Age</b><span>${factLines(app.ageNote)}</span></div>`);
   if (data.release && data.release.maxPlayers > 1) facts.push(html`<div class="fact"><b>Players</b><span>${data.release.minPlayers === data.release.maxPlayers ? data.release.minPlayers : `${data.release.minPlayers} to ${data.release.maxPlayers}`}</span></div>`);
-  if (app.size) facts.push(html`<div class="fact"><b>Size</b><span>${app.size}</span></div>`);
+  if (app.size) facts.push(html`<div class="fact"><b>Size</b><span>${factLines(app.size)}</span></div>`);
   facts.push(html`<div class="fact"><b>Developer</b><span>${data.developer.displayName}</span><small>a person you know</small></div>`);
   facts.push(html`<div class="fact"><b>Shared</b><span>Privately</span><small>by invitation</small></div>`);
 
@@ -403,6 +403,10 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
     target?.scrollIntoView({ behavior: "smooth", block: "start" });
     target?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
   }));
+}
+
+function factLines(text: string): Raw {
+  return html`${text.split(/[;,]\s*/).map((line, i) => html`${i ? html`<br />` : ""}${line}`)}`;
 }
 
 // Latest version with a clamped summary; "more..." reveals the full list.
