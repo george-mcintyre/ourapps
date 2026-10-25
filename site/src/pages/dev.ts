@@ -716,7 +716,7 @@ export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", 
     ${t.needs ? callout("info", needs[t.needs]) : t.stage ? html`<p>${pill(STAGE_PILL[t.stage][0], STAGE_PILL[t.stage][1])}</p>` : html`<p class="small">Enable ${name} TestFlight when your app supports this platform.</p>`}
     ${t.setUp && t.stage !== "open" ? html`<p class="small muted">The repository must upload a ${name} build. Apple processes and reviews it before its matching invitation can open. Use Check with Apple to refresh this card.</p>` : ""}
     ${t.buildRequest?.error ? callout("bad", html`<p>Build request failed: ${t.buildRequest.error}</p>`) : ""}
-    ${platform === "macos" && !t.setUp ? html`<label class="check"><input type="checkbox" data-native-mac /> Native Mac app (leave unchecked for Mac Catalyst)</label>` : ""}
+    ${platform === "macos" ? html`<div class="field mt-s"><label for="mac-build-type">Mac build type</label><select id="mac-build-type" data-mac-build-type><option value="catalyst" ${t.profileType !== "MAC_APP_STORE" ? "selected" : ""}>Mac Catalyst: iPhone/iPad app built for Mac</option><option value="native" ${t.profileType === "MAC_APP_STORE" ? "selected" : ""}>Native macOS app target</option></select><div class="hint">Choose the type built by the app's Xcode target. Both run as Mac applications; they need different distribution profiles.</div>${t.setUp ? html`<p class="small">Configured signing: <b>${t.profileType === "MAC_APP_STORE" ? "Native macOS" : "Mac Catalyst"}</b>.</p><button type="button" class="btn sm secondary" data-platform-type>Apply build type and set up profile</button>` : ""}</div>` : ""}
     <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
     ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
     ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
@@ -733,8 +733,8 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
       box.querySelectorAll<HTMLButtonElement>("button").forEach(b => b.disabled = true);
       button.textContent = "Checking...";
       try {
-        const native = box.querySelector<HTMLInputElement>("[data-native-mac]");
-        const body = suffix ? undefined : { ...(native ? { nativeMac: native.checked } : {}), ...(repair ? { repair: true } : {}) };
+        const type = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
+        const body = suffix ? undefined : { ...(type && (!t.setUp || repair) ? { nativeMac: type.value === "native" } : {}), ...(repair ? { repair: true } : {}) };
         render(await api<TestflightStatus>("POST", path + suffix, body));
       } catch (err) {
         render(t);
@@ -747,6 +747,8 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
     if (build) build.onclick = () => void act(build, "/build");
     const repair = box.querySelector<HTMLButtonElement>("[data-platform-repair]");
     if (repair) repair.onclick = () => void act(repair, "", true);
+    const type = box.querySelector<HTMLButtonElement>("[data-platform-type]");
+    if (type) type.onclick = () => void act(type, "", true);
   };
   try { render(await api<TestflightStatus>("GET", path)); }
   catch (err) { box.innerHTML = errorBox(err).html; }

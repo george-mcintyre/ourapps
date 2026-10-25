@@ -154,6 +154,7 @@ export interface TestflightBuild {
 }
 
 export interface TestflightStatus {
+  profileType?: "IOS_APP_STORE" | "MAC_CATALYST_APP_STORE" | "MAC_APP_STORE" | "TVOS_APP_STORE";
   setUp: boolean;
   // null with setUp false: ourapps can check with Apple whether the app is in App Store Connect yet.
   needs: TestflightNeed | null;
