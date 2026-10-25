@@ -33,6 +33,23 @@ export interface DeveloperSecrets {
   savedAt?: Partial<Record<"appleIssuerId" | "appleKeyId" | "applePrivateKey" | "appleTeamId" | "githubToken" | "signingKey" | "installerSigningKey", string>>;
 }
 
+export interface BuildRunMetadata {
+  runId: string;
+  runAttempt: string;
+}
+
+export interface VerifiedBuildRun extends BuildRunMetadata {
+  repo: string;
+  createdAt: string;
+  startedAt: string;
+}
+
+export interface BuildRunReservation extends VerifiedBuildRun {
+  version: string;
+  buildNumber: string;
+  reservedAt: string;
+}
+
 // The Apple Distribution certificate ourapps created; its private key is the signingKey secret.
 export interface SigningCertificateRow {
   developerId: string;
@@ -454,6 +471,31 @@ export class Db {
       .bind(appId, platform, version, seed + 1).first<{ counter: number }>();
     if (!reserved || !Number.isSafeInteger(reserved.counter)) throw new BuildNumberError("The Apple build number range is exhausted; an automatic build number cannot be reserved.");
     return reserved.counter;
+  }
+
+  async buildRunReservation(appId: string, platform: ApplePlatform, repo: string, metadata: BuildRunMetadata): Promise<BuildRunReservation | null> {
+    return (await this.buildRunReservations(appId, platform, repo, [metadata]))[0] ?? null;
+  }
+
+  async buildRunReservations(appId: string, platform: ApplePlatform, repo: string, runs: BuildRunMetadata[]): Promise<BuildRunReservation[]> {
+    if (!runs.length) return [];
+    const match = runs.map(() => "(run_id = ? AND run_attempt = ?)").join(" OR ");
+    const found = await this.d1.prepare(`SELECT version, build_number AS buildNumber, github_repo AS repo, run_id AS runId, run_attempt AS runAttempt, run_created_at AS createdAt, run_started_at AS startedAt, reserved_at AS reservedAt FROM build_run_reservations WHERE app_id = ? AND platform = ? AND github_repo = ? AND (${match})`)
+      .bind(appId, platform, repo.toLowerCase(), ...runs.flatMap((run) => [run.runId, run.runAttempt])).all<BuildRunReservation>();
+    return found.results;
+  }
+
+  async associateBuildRun(appId: string, platform: "macos" | "tvos", version: string, buildNumber: string, run: VerifiedBuildRun, reservedAt: string): Promise<BuildRunReservation> {
+    await this.d1.prepare("INSERT INTO build_run_reservations (app_id, platform, version, build_number, github_repo, run_id, run_attempt, run_created_at, run_started_at, reserved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (app_id, platform, github_repo, run_id, run_attempt) DO NOTHING")
+      .bind(appId, platform, version, buildNumber, run.repo.toLowerCase(), run.runId, run.runAttempt, run.createdAt, run.startedAt, reservedAt).run();
+    const saved = await this.buildRunReservation(appId, platform, run.repo, run);
+    if (!saved) throw new Error("Build run association was not saved.");
+    return saved;
+  }
+
+  async hasBuildUpload(appId: string, platform: ApplePlatform, version: string, buildNumber: string, notBefore: string): Promise<boolean> {
+    return Boolean(await this.d1.prepare("SELECT 1 AS found FROM testflight_builds WHERE app_id = ? AND platform = ? AND version = ? AND build_number = ? AND julianday(created_at) >= julianday(?) LIMIT 1")
+      .bind(appId, platform, version, buildNumber, notBefore).first());
   }
 
   // Builds still on their way to friends, least recently checked first; optionally one app's only.

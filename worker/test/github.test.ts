@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppRow, TestflightBuildRow } from "../src/db.js";
+import { Db, type AppRow, type TestflightBuildRow } from "../src/db.js";
 import { fetchBuildManifest, loadBuildStatus } from "../src/github.js";
 import { clearDb, fakeFetch, jsonRes, testDeps, testEnv } from "./helpers.js";
 
@@ -9,6 +9,12 @@ const release = { id: 1, name: "release", path: ".github/workflows/release.yml",
 const manual = { id: 2, name: "apple-platform-testflight", path: ".github/workflows/apple-testflight.yml", state: "active" };
 const run = (overrides = {}) => ({ id: 101, workflow_id: 1, run_number: 7, run_attempt: 1, name: "release", html_url: "https://github.com/o/app/actions/runs/101", event: "repository_dispatch", status: "in_progress", conclusion: null, created_at: "2026-10-16T09:58:00Z", run_started_at: "2026-10-16T09:59:00Z", ...overrides });
 const prefix = "GET api.github.com/repos/o/app/actions/";
+async function seedStatusApp() {
+  const db = Db.from(testEnv());
+  const now = "2026-10-16T10:00:00Z";
+  await db.insertDeveloper({ id: app.developerId, githubId: 1, githubLogin: "owner", slug: "owner", displayName: "Owner", createdAt: now, termsAcceptedVersion: null, termsAcceptedAt: null });
+  await db.insertApp({ ...app, name: "Example", tagline: "", description: "", whatsNew: "", size: "", minOs: "", ageNote: "", privacySummary: "", iconUrl: "", screenshots: [], screenshotsByPlatform: {}, manifestUrl: "", bundleId: "", showOnPage: true, buildTokenHash: "fixture", createdAt: now, updatedAt: now });
+}
 function routes(runs = [run()], workflows = [release]) {
   return {
     [`${prefix}workflows`]: () => jsonRes({ workflows }),
@@ -253,6 +259,7 @@ describe("GitHub build status", () => {
   });
 
   it("uses the title build number and platform for received upload evidence", async () => {
+    await seedStatusApp();
     const github = fakeFetch({ ...routes([], [manual]),
       [`${prefix}workflows/2/runs`]: () => jsonRes({ workflow_runs: [run({ workflow_id: 2, display_title: "Apple TestFlight macos 1.2.3 (99)", status: "completed", conclusion: "success" })] }),
     });
@@ -264,6 +271,7 @@ describe("GitHub build status", () => {
     expect(await loadBuildStatus(testEnv(), deps, { ...app, platform: "macos" }, token, builds)).toMatchObject({ state: "complete", uploadReceived: false, reason: "workflow-complete-no-upload" });
     deps.advance(15000);
     builds.push({ platform: "macos", version: "1.2.3", buildNumber: "99", createdAt: "2026-10-16T09:59:00Z" } as TestflightBuildRow);
+    await Db.from(testEnv()).insertTestflightBuild({ appId: app.id, platform: "macos", version: "1.2.3", buildNumber: "99", uploadId: null, uploadFileId: null, buildId: null, whatsNew: null, state: "uploaded", message: null, createdAt: "2026-10-16T09:59:00Z", updatedAt: "2026-10-16T09:59:00Z" });
     expect(await loadBuildStatus(testEnv(), deps, { ...app, platform: "macos" }, token, builds)).toMatchObject({ state: "complete", uploadReceived: true, reason: null });
   });
 
@@ -279,8 +287,8 @@ describe("GitHub build status", () => {
     });
     expect(await loadBuildStatus(testEnv(), testDeps(github.fetch), { ...app, platform: "tvos" }, token, [])).toMatchObject({ state: "running", expectedSeconds: 60, estimateSampleCount: 1 });
     expect(github.calls.filter((call) => call.url.includes("/jobs?"))).toHaveLength(1);
-    expect(caches.open).toHaveBeenCalledWith("ourapps-build-status-v2");
-    expect([...entries.keys()].every((key) => key.includes("/build-status/v2/"))).toBe(true);
+    expect(caches.open).toHaveBeenCalledWith("ourapps-build-status-v3");
+    expect([...entries.keys()].every((key) => key.includes("/build-status/v3/"))).toBe(true);
   });
 });
 

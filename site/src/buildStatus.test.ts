@@ -34,6 +34,10 @@ describe("GitHub status panel", () => {
     expect(card).toContain("Complete");
     expect(card).toContain("ourapps has received a matching upload");
     expect(card).not.toContain("Apple processing, review and installation availability are separate");
+    const unknown = buildStatusCard({ ...status, state: "complete", conclusion: "success", uploadReceived: null }).html;
+    expect(unknown).toContain("upload status for this run is unconfirmed");
+    expect(unknown).not.toContain("Finished without upload");
+    expect(unknown).not.toContain("no matching upload has reached");
   });
 
   it("shows permission guidance and failed/cancelled outcomes", () => {
