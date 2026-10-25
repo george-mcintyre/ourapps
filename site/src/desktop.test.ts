@@ -81,7 +81,11 @@ describe("desktop install choices", () => {
     const page = platformTestflightCard({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", status).html;
     expect(page).toContain("Set up Mac TestFlight");
     expect(page).toContain("existing app record");
-    expect(page).toContain("Native Mac app");
+    expect(page).toContain("Native macOS app target");
     expect(page).not.toContain('href="https://testflight.apple.com/join/closed"');
+    const configured = platformTestflightCard({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", { ...status, setUp: true, needs: null, profileType: "MAC_APP_STORE" }).html;
+    expect(configured).toContain('value="native" selected');
+    expect(configured).toContain("Apply build type and set up profile");
+    expect(configured).toContain("Configured signing");
   });
 });
