@@ -1,4 +1,4 @@
-import type { ScreenshotPlatform, ScreenshotSets } from "@my/store-shared";
+import type { AppleTarget, MacTarget, WindowsTarget, ScreenshotPlatform, ScreenshotSets } from "@my/store-shared";
 
 // Calls to the worker on the same origin.
 
@@ -48,12 +48,16 @@ export interface DevApp extends AppDetails {
 }
 
 export interface Install {
+  macos?: MacTarget | null;
+  windows?: WindowsTarget | null;
+  tvos?: AppleTarget | null;
   pwa: string | null;
   android: { apk: string } | null;
   ios: { bundleId: string; testflight: string | null; devices?: ("iphone" | "ipad")[] } | null;
 }
 
 export interface Release {
+  apple?: Partial<Record<"ios" | "macos" | "tvos", { version: string; testflightUrl: string } | null>>;
   version: string;
   minPlayers: number;
   maxPlayers: number;
@@ -174,7 +178,7 @@ export interface ReleaseStatus {
   assets: string[];
   manifestUrl: string | null;
   version: string | null;
-  install: { ios: boolean; android: boolean; pwa: boolean } | null;
+  install: { ios: boolean; android: boolean; pwa: boolean; macos?: boolean; windows?: boolean; tvos?: boolean } | null;
   // Web version: copied from web.zip by ourapps, or at the developer's own address.
   web: { hosting: "ourapps" | "own"; url: string | null; ok: boolean | null; status: number | null } | null;
   screenshots: number;

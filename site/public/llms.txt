@@ -1,6 +1,6 @@
 # ourapps.app
 
-> Private installer for apps people build for friends and family. Developers sign in with GitHub, register apps, create share links; friends install from the links on iPhone and iPad (through Apple's TestFlight, signed and uploaded by ourapps), Android (APK) or as web apps, without an App Store listing.
+> Private installer for apps people build for friends and family. Developers sign in with GitHub, register apps and create share links. Install paths cover iPhone and iPad through TestFlight, Android packages, Mac disk images, Windows installers, matching ready Mac and Apple TV TestFlight invitations, and web apps.
 
 - [API reference for agents](https://ourapps.app/agents.md): every endpoint, auth with `Authorization: Bearer oa_...`, workflows.
 - [Technical reference](https://ourapps.app/reference): supported app types, where every part runs, web app hosting on the developer's own Cloudflare account, engines and frameworks.
@@ -8,3 +8,5 @@
 - [Repository contract](https://ourapps.app/contract.md): what an app's GitHub repository must publish and the calls its workflow makes.
 - Console: https://ourapps.app/dev (sign in with GitHub). API keys and agent prompts: https://ourapps.app/dev/agents.
 - Source: https://github.com/george-mcintyre/ourapps
+
+Copyright Level N Ltd 2026.

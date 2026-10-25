@@ -21,7 +21,7 @@ function sections(origin: string, slug: string): Section[] {
         <ol class="steps">
           <li><b>Sign in with GitHub</b> at <a href="/dev">/dev</a>. An agent cannot do this; it is your identity.</li>
           <li><b>Create a GitHub fine-grained token</b> (Contents, read and write, on your app repositories) and paste it under <a href="/dev/settings#credentials">Settings</a>. Tokens are created on GitHub while signed in as you. <a href="/dev/guide#github-token">Steps</a>.</li>
-          <li><b>iPhone apps only: pay for the Apple Developer Program</b> (99 US dollars a year), then create an <b>App Store Connect API key</b> with the Admin role and paste issuer id, key id and the .p8 contents under Settings, plus your team id. Saving it sets up iPhone signing by itself. <a href="/dev/guide#apple-key">Steps</a>.</li>
+          <li><b>Apple TestFlight apps: pay for the Apple Developer Program</b> (99 US dollars a year), then create an <b>App Store Connect API key</b> with the Admin role and paste issuer id, key id and the .p8 contents under Settings, plus your team id. Saving it sets up Apple Distribution signing. <a href="/dev/guide#apple-key">Steps</a>.</li>
           <li><b>Web apps only: create a free Cloudflare account</b> and a token that lets your workflows deploy to it. Your web apps then run from your account, free and without a request limit. <a href="/dev/guide#cloudflare">Steps</a>.</li>
           <li><b>Create one API key</b> on <a href="/dev/agents">Agents and API</a> and store it where your agent runs. Keys are made from a browser session only; agents cannot mint their own.</li>
         </ol>
@@ -54,11 +54,13 @@ function sections(origin: string, slug: string): Section[] {
       id: "overview",
       title: "What ourapps does",
       body: html`
-        <p>ourapps puts apps you build onto the phones of people you know, without the App Store or Google Play. You add an app in this console, create a share link, and send it. Your friend taps the link and gets an install page that looks like the store they already use.</p>
+        <p>ourapps shares apps you build with people you know, on phones, tablets, computers, Apple TV and the web. You add an app in this console, create a share link, and send it. Your friend opens the link and gets the install choices for their device.</p>
         <div class="grid-2">
           <div class="card flat"><h3>${icon("android", "icon-20")} Android</h3><p>The page offers a direct download of your signed APK and walks the friend through the one-time "allow from this source" prompt. Nothing else is needed.</p></div>
           <div class="card flat"><h3>${icon("phone", "icon-20")} iPhone and iPad</h3><p>Friends install through Apple's free TestFlight app from an invitation on the install page, with nothing to change on their phone. ourapps signs each build, uploads it to TestFlight and sends it to your friends; Apple reviews the first build of each version, and ourapps asks for a fresh build before the 90-day expiry.</p></div>
           <div class="card flat"><h3>${icon("globe", "icon-20")} Web apps</h3><p>Your repository deploys the built site to your own free Cloudflare account, which serves plain files without a request limit. The install page opens it, and the app offers a one-tap add to the home screen. Details in the <a href="/reference#web">reference</a>.</p></div>
+          <div class="card flat"><h3>Mac and Windows</h3><p>Publish .dmg or .exe packages with their architecture, minimum system, signing and Mac notarization status. The page offers named package choices alongside the web version. A Mac browser does not identify its chip reliably.</p></div>
+          <div class="card flat"><h3>Mac and Apple TV TestFlight</h3><p>The app page has separate setup buttons for each platform. Save the app's Apple bundle identifier, add the platform to its existing App Store Connect record, then check with Apple. Mac setup uses your browser session and provisions the installer signing key on the server. A matching ready build and open invitation are required; declaring a platform in my-app.json does not open its invitation.</p></div>
           <div class="card flat"><h3>${icon("lock", "icon-20")} Private by design</h3><p>No search, no listing, no index. Install pages live at random addresses, the app files are served through links that expire after an hour, and a share link can be revoked at any time.</p></div>
         </div>
         <p>The whole thing runs on free tiers. The only paid item is Apple's developer membership, which you need for iPhone apps anyway.</p>
@@ -159,7 +161,7 @@ base64 -i release.keystore | pbcopy   # paste as the secret ANDROID_KEYSTORE_BAS
           <tr><td>What's new</td><td>The What's new section</td><td>Shown only when the latest release has no notes of its own; release notes from CHANGELOG.md take precedence.</td></tr>
           <tr><td>Privacy summary</td><td>App privacy card</td><td>Plain words: what is stored, where it goes, who can see it.</td></tr>
           <tr><td>Size, compatibility, age</td><td>Facts strip and Information</td><td>Compatibility is free text, for example "iOS 17 or later".</td></tr>
-          <tr><td>Screenshots</td><td>Preview carousel, per version</td><td>A general list plus optional lists for iPhone, iPad, Android and Web, one URL per line, in their own proportions. A version without its own list shows the general one; a single list is shown for every version. Blank lists fall back to my-app.json (<code>screenshots</code> and <code>screenshotsByPlatform</code>), then to generated previews. On a phone or tablet the page shows the matching version; on a computer, a tab per version.</td></tr>
+          <tr><td>Screenshots</td><td>Preview carousel, per version</td><td>A general list plus optional lists for iPhone, iPad, Android, Web, Mac, Windows and Apple TV, one URL per line. A version without its own list shows the general one or the closest other version. Blank lists fall back to my-app.json, then generated previews. Computers offer the matching native version, web and Apple TV instructions when declared.</td></tr>
           <tr><td>Repository</td><td>Not shown</td><td><code>owner/name</code>. The console reads the latest release here.</td></tr>
           <tr><td>iPhone bundle ID</td><td>Not shown</td><td>The bundle identifier in your Xcode project. ourapps creates the App ID and the App Store profile for it.</td></tr>
           <tr><td>Show on my public page</td><td>Your /${slug} page</td><td>Details only, never install links. Off by default.</td></tr>
@@ -339,28 +341,36 @@ startButton.onclick = async () => {
   "name": "Skull",
   "version": "0.1.2",
   "testflightUrl": "https://testflight.apple.com/join/AbCd1234",
+  "apple": {
+    "ios": { "version": "0.1.1", "testflightUrl": "https://testflight.apple.com/join/AbCd1234" },
+    "macos": null,
+    "tvos": null
+  },
   "android": { "apkUrl": "https://ourapps.app/dl/..." },
   "pwa": null,
   "linksExpireAt": "2026-10-16T11:00:00.000Z"
 }</code></pre>
         <ol class="steps">
           <li>Create a share link labelled <b>In-app updates</b> and never revoke it (revoking it stops update checks for everyone who has the app). Put its id in the app.</li>
-          <li>On launch, fetch <code>/latest</code>. Compare <code>version</code> with the running version. Do this quietly; a failed fetch means no update, not an error.</li>
-          <li>If newer, show one button. Android: open <code>android.apkUrl</code> in the browser; the phone downloads and asks to install. iPhone apps from TestFlight need no button: TestFlight updates them, and <code>testflightUrl</code> opens TestFlight if you want one.</li>
+          <li>On launch, fetch <code>/latest</code>. For direct packages compare <code>version</code>. For TestFlight compare only the running platform's <code>apple.ios.version</code>, <code>apple.macos.version</code> or <code>apple.tvos.version</code>; a null entry means no ready invitation. A failed fetch means no update.</li>
+          <li>If newer, show one button. Android opens <code>android.apkUrl</code>. Desktop downloads open the share page for package selection. TestFlight updates apps itself; an optional button opens only the matching Apple entry's <code>testflightUrl</code>. Direct Mac package versions and Mac TestFlight versions are separate.</li>
           <li>Fetch right before opening the link, because the signed links inside are good for an hour.</li>
         </ol>
         <p class="small muted">The agent prompt on <a href="/dev/agents">Agents and API</a> asks your coding agent to add this check.</p>
         <h3>Swift (iOS)</h3>
-        <pre><code>struct Latest: Decodable { let version: String; let testflightUrl: String? }
+        <pre><code>struct Invitation: Decodable { let version: String; let testflightUrl: String }
+struct AppleVersions: Decodable { let ios: Invitation? }
+struct Latest: Decodable { let apple: AppleVersions }
 
 func checkForUpdate() async {
     guard let url = URL(string: "https://ourapps.app/api/public/links/LINK_ID/latest"),
           let (data, _) = try? await URLSession.shared.data(from: url),
           let latest = try? JSONDecoder().decode(Latest.self, from: data),
+          let approved = latest.apple.ios,
           let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
-          latest.version.compare(current, options: .numeric) == .orderedDescending,
-          let install = latest.testflightUrl.flatMap({ URL(string: $0) }) else { return }
-    // Show your own "Update to \(latest.version)" button, then:
+          approved.version.compare(current, options: .numeric) == .orderedDescending,
+          let install = URL(string: approved.testflightUrl) else { return }
+    // Show your own "Update to \(approved.version)" button, then:
     await UIApplication.shared.open(install)
 }</code></pre>
         <h3>Kotlin (Android)</h3>
@@ -427,7 +437,7 @@ suspend fun checkForUpdate(context: Context) {
           <tr><th>What</th><th>How it is stored</th><th>When it is decrypted</th></tr>
           <tr><td>App Store Connect key (issuer id, key id, .p8), Apple team id</td><td>AES-256-GCM, one ciphertext per field, under a key derived for your account alone (HKDF from the master secret), with your account id and the field name bound in as authenticated data so a ciphertext cannot be moved between accounts or fields</td><td>Only inside one request or scheduled check: setting up signing or TestFlight, a workflow's upload, and the ten-minute check that looks after TestFlight builds</td></tr>
           <tr><td>GitHub token</td><td>Same scheme</td><td>Only when reading a release or asking the repository for a fresh build</td></tr>
-          <tr><td>Private key of the Apple Distribution certificate ourapps created</td><td>Same scheme; the key is made in your browser</td><td>Only when an app's release workflow presents that app's build token</td></tr>
+          <tr><td>Apple Distribution and Mac Installer Distribution private keys</td><td>Same scheme; the app signing key is made in your browser and the installer key during Mac setup on the server</td><td>Only when an app's release workflow presents that app's build token; the installer key is returned only for Mac builds</td></tr>
           <tr><td>API keys, build tokens, sign-in sessions</td><td>Keyed hashes (HMAC-SHA256 with a pepper derived from the master secret); the key itself is shown to you once and never stored</td><td>Never; a presented key is hashed and compared</td></tr>
           <tr><td>Download links for app files</td><td>Signed with their own secret; expire after one hour</td><td>n/a</td></tr>
         </table>

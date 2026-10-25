@@ -1,12 +1,57 @@
 # Contract for app repositories
 
-What an app's GitHub repository must do so the store can install it on friends' phones.
+What an app's GitHub repository must publish for friends to install it on phones, computers and Apple TV, or open it in a browser.
 The store never looks at your source; it reads one release asset and talks to one workflow.
 Served at https://ourapps.app/contract.md; the API reference for agents is at
 https://ourapps.app/agents.md. The store dashboard at /dev/agents carries a prompt that sets a
 repository up to this contract.
 
 ## 1. Publish a release with `my-app.json`
+
+### Desktop package specification
+
+Publish desktop entries only after the actual package has passed download, installation and launch checks. Windows Application Control and other system policies can block unsigned executables after a successful installation; identify the restriction without asking users to change machine policy.
+
+Optional `install.macos` and `install.windows` are null or `{ "packages": [...] }`. Each non-empty package list describes verified release assets:
+
+```json
+"macos": { "packages": [{ "url": "https://api.github.com/repos/owner/app/releases/assets/123", "format": "dmg", "architectures": ["arm64", "x64"], "minOsVersion": "14.0", "signing": "signed", "notarization": "notarized" }] },
+"windows": { "packages": [{ "url": "https://api.github.com/repos/owner/app/releases/assets/124", "format": "exe", "architectures": ["x64"], "minOsVersion": "10.0.19045", "signing": "unsigned" }] }
+```
+
+- Every URL must use HTTPS; release assets use their private release-asset addresses and ourapps' signed-download delivery.
+- Architectures must be non-empty, unique and drawn from `arm64` and `x64`; separate architecture-specific installers are separate packages.
+- macOS accepts `dmg` only and requires `notarization`, either `notarized` or `not-notarized`; `unsigned` with `notarized` is rejected.
+- Windows accepts `exe` only and must omit `notarization`.
+- `signing` is `signed` or `unsigned`; unknown enum values are rejected. Minimum system and signing claims must match the verified package.
+- Missing or null targets offer no download. Optional `screenshotsByPlatform.macos` and `.windows` use the screenshot fallback rules below.
+- Signing and notarization describe the package; operating-system installation checks apply.
+
+### Apple platform specification
+
+Each Apple platform needs its own successful setup, signed export, upload, Apple processing and tester installation checks before delivery is considered verified.
+
+Optional `install.macos.testflight` is `{ "bundleId": "com.example.app.mac", "minOsVersion": "14.0", "architectures": ["arm64", "x64"] }`. The architecture list must be non-empty and unique, using only verified `arm64`/`x64` support. Mac `packages` may be empty only with a valid TestFlight declaration.
+
+Optional `install.tvos` is null or `{ "bundleId": "com.example.app.tv", "minOsVersion": "18.0" }`. Optional `screenshotsByPlatform.tvos` uses the screenshot fallback rules. Player and Board modes belong to the app, not the manifest.
+
+Apple signing, uploads, review progress, invitations and approved versions are stored separately for `ios`, `macos` and `tvos`.
+
+`/api/public/links/:id/latest` includes `apple: { ios, macos, tvos }`. Each key is null or `{ "version": "<available version>", "testflightUrl": "<open invitation>" }`. Non-null requires that platform's build to be available to external testers and its invitation to be open. A GitHub release version is not an approved Apple version. Top-level `testflightVersion` and `testflightUrl` are iOS-only aliases. Direct package updates use `macos` or `windows`, each null or `{ version, packages }`, with signed download URLs.
+
+Platform-specific build addresses:
+
+```
+GET|HEAD /api/build/:app/:platform/signing
+POST /api/build/:app/:platform/testflight/upload
+POST /api/build/:app/:platform/testflight/commit
+```
+
+Existing build addresses are iOS-only aliases. Unknown platforms fail explicitly; they never use iOS credentials as a fallback. A TestFlight declaration offers no install action until its platform's invitation is ready. Direct Mac downloads use Developer ID signing and notarization; Mac TestFlight uses its own distribution signing path.
+
+Set up a platform in a signed-in browser using `POST /api/dev/apps/:id/testflight/:platform` with `{}`. Mac setup defaults to Catalyst (`MAC_CATALYST_APP_STORE`); native Mac setup uses `{ "nativeMac": true }` and `MAC_APP_STORE`. tvOS uses `TVOS_APP_STORE`. Mac setup provisions a separate encrypted `MAC_INSTALLER_DISTRIBUTION` certificate and private key with the saved Apple credentials. Apple may refuse issuance if the account lacks access or reaches its certificate limit; the console reports Apple's error.
+
+Explicit signing responses include `platform`, `profileType`, `upload` and `exportOptions`. Mac also receives `installerCertificate` and `installerPrivateKeyPem`; other platforms never receive these. Import both app and installer signing material into the temporary keychain, install the matching profile, and use the returned manual `app-store-connect` export options. Mac uploads require `.pkg` (`com.apple.pkg`, `MAC_OS`); tvOS requires `.ipa` (`com.apple.ipa`, `TV_OS`). Version and build-number fields match the iOS upload request below. Delete temporary key and response files after import and remove the keychain when the job ends.
 
 Every build publishes a GitHub Release (not a pre-release, not a draft) with these assets:
 
