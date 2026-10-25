@@ -83,7 +83,7 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
 
   if (p[0] === "build" && p.length === 3 && p[2] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1]);
   if (p[0] === "build" && p.length === 4 && p[3] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1], p[2]);
-  if (p[0] === "build" && p.length === 5 && p[3] === "testflight" && (p[4] === "upload" || p[4] === "commit") && m === "POST") return buildTestflight(request, env, deps, p[1], p[4], p[2]);
+  if (p[0] === "build" && p.length === 5 && p[3] === "testflight" && (p[4] === "upload" || p[4] === "commit" || p[4] === "reserve-build") && m === "POST") return buildTestflight(request, env, deps, p[1], p[4], p[2]);
   if (p[0] === "build" && p.length === 4 && p[2] === "testflight" && (p[3] === "upload" || p[3] === "commit") && m === "POST") return buildTestflight(request, env, deps, p[1], p[3]);
 
   if (p[0] === "dev") {

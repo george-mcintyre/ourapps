@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- Mac/TV workflows without dashboard-reserved inputs POST `/api/build/:app/:platform/testflight/reserve-build` with the existing app build token. `reservePlatformBuild` in `worker/src/testflight.ts` is shared with dashboard dispatch, returning version/buildNumber strings without dispatching. Migration0016 supplies atomic reservation; supplied dashboard inputs must skip the reservation call. Route tests cover cross-app rejection and concurrent dashboard/token allocations.
+
 - GitHub build status: `loadBuildStatus` in `worker/src/github.ts`, exposed as `buildStatus` by TestFlight views; `site/src/buildStatus.ts` refreshes every visible 30 seconds. iOS matches `release.yml`; Mac/TV require `apple-testflight.yml` and canonical `Apple TestFlight macos|tvos VERSION (BUILD)` titles. `platformVerified` identifies only the title's platform, not app/request identity. Successful runs without matching upload evidence display Finished without upload. Cache API stores sanitized status15s/timings15min. Mac/TV dispatch uses Actions write, iOS uses Contents write, status uses Actions read; atomic per-app/platform/version build reservations are in migration0016.
 
 - iPhone/iPad compatibility on Apple-silicon Mac is separate from Catalyst/native Mac. `release.apple.iosOnMac` and `/latest.apple.iosOnMac` require iOS readiness plus Apple's beta-group permission flag; `apps.ios_on_mac` and `ios_on_mac_checked_at` cache that flag for one minute (migration 0015). `site/src/desktop.ts` labels the compatibility invitation explicitly. No Intel claim or `macos` readiness fallback.

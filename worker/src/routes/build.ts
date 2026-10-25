@@ -5,7 +5,7 @@ import { Db, type AppRow } from "../db.js";
 import type { Deps, Env } from "../env.js";
 import { HttpError, bearer, json, readJson } from "../http.js";
 import { loadSecrets } from "../secrets.js";
-import { commitUpload, reserveUpload } from "../testflight.js";
+import { commitUpload, reservePlatformBuild, reserveUpload } from "../testflight.js";
 import { applePlatform, profileType } from "../apple-platform.js";
 
 // Verifies the per-app token; a token stored as a plain hash is rewritten as a keyed hash.
@@ -59,15 +59,16 @@ export async function buildSigning(request: Request, env: Env, appId: string, pl
   });
 }
 
-// POST /api/build/:app/testflight/upload and /commit - the workflow uploads its .ipa to Apple through
-// operations ourapps reserves, so the repository holds no Apple key.
-export async function buildTestflight(request: Request, env: Env, deps: Deps, appId: string, step: "upload" | "commit", platformName = "ios"): Promise<Response> {
+// Build-token TestFlight uploads, commits and Mac/TV build-number reservations.
+export async function buildTestflight(request: Request, env: Env, deps: Deps, appId: string, step: "upload" | "commit" | "reserve-build", platformName = "ios"): Promise<Response> {
   const platform = applePlatform(platformName);
+  if (step === "reserve-build" && platform === "ios") throw new HttpError(400, "Build-number reservation supports macos and tvos only; ios reservation is unsupported.");
   const db = Db.from(env);
   const base = await db.appById(appId);
   if (!base) throw new HttpError(404, "unknown app");
   const app = await db.platformApp(base, platform);
   await requireBuildToken(request, env, app);
+  if (step === "reserve-build") return json(await reservePlatformBuild(env, deps, app));
   const body = await readJson<Record<string, unknown>>(request);
   return json(step === "upload" ? await reserveUpload(env, deps, app, body) : await commitUpload(env, deps, app, body));
 }
