@@ -11,6 +11,7 @@ import { parseBuildRunMetadata } from "../github.js";
 import { AppleError } from "../apple.js";
 import { appleClient } from "../flow.js";
 import { sanitiseUploadFile } from "../upload-diagnostic.js";
+import { uploadInteger, validateExistingUploadOperations } from "../upload-operations.js";
 
 // Verifies the per-app token; a token stored as a plain hash is rewritten as a keyed hash.
 async function requireBuildToken(request: Request, env: Env, app: AppRow, rehash = true): Promise<void> {
@@ -39,6 +40,36 @@ export async function buildUploadFileStatus(request: Request, env: Env, deps: De
   } catch (error) {
     return json({ error: "Apple upload-file lookup failed", appleStatus: error instanceof AppleError ? error.status : null }, 502);
   }
+}
+
+export async function buildUploadFileOperations(request: Request, env: Env, deps: Deps, appId: string, platformName: string, fileId: string): Promise<Response> {
+  if (new URL(request.url).protocol !== "https:") throw new HttpError(400, "Upload operation retrieval requires HTTPS.");
+  const db = Db.from(env);
+  const app = await db.appById(appId);
+  if (!app) throw new HttpError(404, "unknown app");
+  await requireBuildToken(request, env, app, false);
+  const platform = applePlatform(platformName);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(fileId)) throw new HttpError(404, "unknown upload file");
+  const row = await db.testflightBuild(app.id, fileId, platform);
+  if (!row) throw new HttpError(404, "unknown upload file");
+  const body = await readJson<unknown>(request);
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "version, buildNumber and a positive safe-integer fileSize are required.");
+  const input = body as Record<string, unknown>;
+  if (typeof input.version !== "string" || !input.version || input.version.length > 64 || typeof input.buildNumber !== "string" || !input.buildNumber || input.buildNumber.length > 64 || typeof input.fileSize !== "number" || !Number.isSafeInteger(input.fileSize) || input.fileSize <= 0) throw new HttpError(400, "version, buildNumber and a positive safe-integer fileSize are required.");
+  if (row.state !== "uploading" || input.version !== row.version || input.buildNumber !== row.buildNumber) throw new HttpError(409, "Existing upload identity or recorded state does not match the request.");
+  let attributes: unknown;
+  try {
+    const secrets = await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"], false);
+    attributes = await appleClient(env, deps, secrets).readBuildUploadFile(fileId);
+  } catch (error) {
+    return json({ error: "Apple upload-file lookup failed", appleStatus: error instanceof AppleError ? error.status : null }, 502);
+  }
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) throw new HttpError(502, "Apple upload-file response is invalid.");
+  const file = attributes as Record<string, unknown>;
+  const delivery = file.assetDeliveryState;
+  if (!delivery || typeof delivery !== "object" || Array.isArray(delivery) || (delivery as Record<string, unknown>).state !== "AWAITING_UPLOAD" || (file.uploaded !== undefined && file.uploaded !== false) || uploadInteger(file.fileSize, 1) !== input.fileSize) throw new HttpError(409, "Apple upload state or file size does not match the request.");
+  const operations = validateExistingUploadOperations(file.uploadOperations, input.fileSize);
+  return json({ platform, version: row.version, buildNumber: row.buildNumber, fileSize: input.fileSize, uploadFileId: fileId, operations });
 }
 
 // GET or HEAD /api/build/:app/signing - everything an iPhone build needs: ourapps' certificate, its
