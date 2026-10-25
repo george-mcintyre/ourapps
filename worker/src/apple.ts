@@ -207,6 +207,12 @@ export class AppleClient {
     });
   }
 
+  async readBuildUploadFile(fileId: string): Promise<unknown> {
+    const result = await this.call<{ data: Resource<unknown> }>("GET", `/v1/buildUploadFiles/${encodeURIComponent(fileId)}`);
+    if (result?.data?.id !== fileId || result.data.type !== "buildUploadFiles" || !result.data.attributes || typeof result.data.attributes !== "object" || Array.isArray(result.data.attributes)) throw new AppleError(502, "Invalid Apple upload-file response.");
+    return result.data.attributes;
+  }
+
   async buildUploadState(uploadId: string): Promise<{ state: string; errors: string[] }> {
     const res = await this.call<{ data: Resource<{ state?: { state?: string; errors?: { description?: string; code?: string }[] } }> }>("GET", `/v1/buildUploads/${uploadId}`);
     const st = res.data.attributes.state;

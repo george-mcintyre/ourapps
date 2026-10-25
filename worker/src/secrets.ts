@@ -55,7 +55,7 @@ async function parse(env: Env, developerId: string, blob: string): Promise<{ env
 }
 
 // Decrypt only the requested fields; a stale envelope is rewrapped under the current key.
-export async function loadSecrets(env: Env, developerId: string, only?: readonly SecretField[]): Promise<DeveloperSecrets> {
+export async function loadSecrets(env: Env, developerId: string, only?: readonly SecretField[], rewrapStale = true): Promise<DeveloperSecrets> {
   const db = Db.from(env);
   const blob = await db.secretsBlob(developerId);
   if (!blob) return {};
@@ -68,7 +68,7 @@ export async function loadSecrets(env: Env, developerId: string, only?: readonly
     const sealed = envelope.fields[f];
     if (sealed) out[f] = await openField(key, developerId, f, sealed);
   }
-  if (stale) await rewrap(env, developerId, envelope, key);
+  if (stale && rewrapStale) await rewrap(env, developerId, envelope, key);
   return out;
 }
 

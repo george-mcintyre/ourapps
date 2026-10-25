@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- Read-only upload diagnosis: `buildUploadFileStatus` in `worker/src/routes/build.ts`, `sanitiseUploadFile` in `worker/src/upload-diagnostic.ts`; GET `/api/build/:app/:platform/testflight/upload/:file/status` scopes app build token and existing upload ownership. Reads Apple metadata, exposes bounded state/method/offset/length/type/coverage plus host/header names only, and skips token rewrite and credential rewrap. It never resumes, reserves or commits an upload.
+
 - Verified workflow reservation associations are in migration0017 and the reservation/status helpers in `worker/src/github.ts` and `testflight.ts`. Optional runId/runAttempt metadata is checked against GitHub before allocation; same-attempt retries reuse the pair. Unknown upload receipt is null and the console must never label that as absent. Bodyless reservation clients remain valid.
 
 - Mac/TV workflows without dashboard-reserved inputs POST `/api/build/:app/:platform/testflight/reserve-build` with the existing app build token. `reservePlatformBuild` in `worker/src/testflight.ts` is shared with dashboard dispatch, returning version/buildNumber strings without dispatching. Migration0016 supplies atomic reservation; supplied dashboard inputs must skip the reservation call. Route tests cover cross-app rejection and concurrent dashboard/token allocations.
