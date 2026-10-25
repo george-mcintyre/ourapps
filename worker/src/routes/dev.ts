@@ -38,6 +38,8 @@ function publicApp(app: AppRow) {
     testflightCheckedAt: _checked,
     buildRequestedAt: _requested,
     buildRequestError: _requestError,
+    iosOnMac: _iosOnMac,
+    iosOnMacCheckedAt: _iosOnMacCheckedAt,
     ...rest
   } = app;
   return rest;

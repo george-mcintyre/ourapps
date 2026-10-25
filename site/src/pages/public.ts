@@ -245,7 +245,8 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
   const history = data.history ?? [];
   // The latest release's notes are the truth; the dashboard field only fills in when there are none.
   // iPhone and iPad get what TestFlight has, which can be older than the latest release.
-  const version = d.platform === "ios" && data.release?.install.ios?.testflight ? (data.release.apple?.ios?.version ?? data.release.testflightVersion ?? data.release.version) : data.release?.version;
+  const compatibilityVersion = d.platform === "macos" && !data.release?.install.macos?.packages.length && !data.release?.apple?.macos ? data.release?.apple?.iosOnMac?.version : null;
+  const version = compatibilityVersion ?? (d.platform === "ios" && data.release?.install.ios?.testflight ? (data.release.apple?.ios?.version ?? data.release.testflightVersion ?? data.release.version) : data.release?.version);
   const latest = history.find((h) => h.version === version) ?? history[0];
   const whatsNew = latest?.notes || app.whatsNew || "";
   const updated = latest?.date ?? (history.length === 0 ? app.updatedAt : null);
@@ -474,6 +475,7 @@ function ctaArea(data: LinkPage, d: Detected, name: string): Raw {
   if (d.platform === "macos" || d.platform === "windows") {
     const native = install[d.platform];
     if (native?.packages.length || (d.platform === "macos" && data.release.apple?.macos)) return html`<button class="btn get" data-get>Get</button><span class="small muted">See install options below</span>`;
+    if (d.platform === "macos" && data.release.apple?.iosOnMac) return html`<a class="btn get" href="${data.release.apple.iosOnMac.testflightUrl}">Get iPhone/iPad app</a><span class="small muted">Apple-silicon Mac · TestFlight</span>`;
     if (install.pwa) return html`<a class="btn get" href="${install.pwa}">Open web app</a>`;
     return html`<span class="pill">No compatible download available</span>`;
   }

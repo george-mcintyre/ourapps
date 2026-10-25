@@ -19,6 +19,13 @@ describe("desktop install choices", () => {
     expect(desktopAvailability(webOnly, "windows").html).toContain("No Windows installer is published");
     expect(desktopAvailability(webOnly, "windows").html).not.toContain("href=");
     expect(desktopAvailability(release, "macos").html).toBe("");
+    const compatible = { ...webOnly, apple: { iosOnMac: { version: "2.0", testflightUrl: "https://testflight.apple.com/join/compatible" }, macos: null } };
+    const card = desktopAvailability(compatible, "macos").html;
+    expect(card).toContain("iPhone/iPad compatibility version for Apple-silicon Macs");
+    expect(card).toContain("Version 2.0");
+    expect(card).toContain('href="https://testflight.apple.com/join/compatible"');
+    expect(card).not.toContain("Intel");
+    expect(desktopAvailability(compatible, "windows").html).not.toContain("/join/compatible");
   });
   it("keeps native and web selectable, with wide previews", () => {
     const views = availableViews(release.install, () => false);

@@ -3,7 +3,7 @@ import { SCREENSHOT_PLATFORMS, type ScreenshotSets } from "@my/store-shared";
 import { renderSVG } from "uqr";
 import { Db, type AppRow, type Developer, type LinkRow } from "../db.js";
 import type { Deps, Env } from "../env.js";
-import { dlUrl, signManifestLinks } from "../flow.js";
+import { appleClient, dlUrl, signManifestLinks } from "../flow.js";
 import { loadHistory } from "../history.js";
 import { HttpError, json } from "../http.js";
 import { verifyLink } from "../links.js";
@@ -50,7 +50,7 @@ async function testflightVersion(env: Env, app: AppRow): Promise<string | null> 
 }
 
 async function appleReadiness(env: Env, deps: Deps, app: AppRow) {
-  const ready = {} as Record<ApplePlatform, { version: string; testflightUrl: string } | null>;
+  const ready = {} as Record<ApplePlatform | "iosOnMac", { version: string; testflightUrl: string } | null>;
   const db = Db.from(env);
   for (const platform of APPLE_PLATFORMS) {
     const target = platform === "ios" ? app : await db.platformApp(app, platform);
@@ -59,6 +59,19 @@ async function appleReadiness(env: Env, deps: Deps, app: AppRow) {
     const build = invitation && target.ascAppId ? await db.latestOpenBuild(app.id, platform, deps.now().toISOString()) : null;
     ready[platform] = invitation && build ? { version: build.version, testflightUrl: invitation } : null;
   }
+  if (ready.ios && app.betaGroupId && (!app.iosOnMacCheckedAt || deps.now().getTime() - Date.parse(app.iosOnMacCheckedAt) >= 60_000)) {
+    let allowed: boolean | null = null;
+    try {
+      const client = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
+      allowed = await client.iosOnMac(app.betaGroupId);
+    } catch (err) {
+      console.error(`ios-on-mac ${app.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    app.iosOnMac = allowed === null ? null : allowed ? 1 : 0;
+    app.iosOnMacCheckedAt = deps.now().toISOString();
+    await db.setIosOnMac(app.id, allowed, app.iosOnMacCheckedAt);
+  }
+  ready.iosOnMac = ready.ios && app.iosOnMac === 1 ? ready.ios : null;
   return ready;
 }
 
@@ -84,7 +97,7 @@ export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Deve
   try {
     const release = await resolveRelease(env, deps, app, secrets.githubToken);
     manifest = await signManifestLinks(env, deps, dev.id, await loadManifest(env, deps, app, secrets.githubToken));
-    if (!manifest.install.ios) apple.ios = null;
+    if (!manifest.install.ios) apple.ios = apple.iosOnMac = null;
     if (!manifest.install.macos?.testflight) apple.macos = null;
     if (!manifest.install.tvos) apple.tvos = null;
     if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = linkId ? webAppUrl(env, linkId) : null;
@@ -162,7 +175,7 @@ export async function linkLatest(env: Env, deps: Deps, linkId: string): Promise<
   }
   if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = webAppUrl(env, linkId);
   const ios = manifest.install.ios ? apple.ios : null;
-  if (!manifest.install.ios) apple.ios = null;
+  if (!manifest.install.ios) apple.ios = apple.iosOnMac = null;
   if (!manifest.install.macos?.testflight) apple.macos = null;
   if (!manifest.install.tvos) apple.tvos = null;
   return json({

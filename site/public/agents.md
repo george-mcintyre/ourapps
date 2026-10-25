@@ -37,6 +37,8 @@ Optional `screenshotsByPlatform.macos`, `.windows` and `.tvos` use the existing 
 
 ### Apple platform specification
 
+`release.apple.iosOnMac` and `/latest.apple.iosOnMac` are null or `{ version, testflightUrl }`. This is an explicitly verified iPhone/iPad compatibility version for Macs with Apple silicon, not the native/Catalyst `macos` path. It requires a ready external iOS build and open invitation and that beta group's `iosBuildsAvailableForAppleSiliconMac` flag to be true; false/unknown/unavailable means null. No Intel support is implied.
+
 Public update specification: `/api/public/links/:id/latest` adds `apple: { ios, macos, tvos }`. Each entry is null or `{ version, testflightUrl }`, requiring that exact platform's build to be available for external testers and its invitation open. Existing `testflightVersion` and `testflightUrl` are iOS-only aliases. No platform falls back to another platform's approval or to the latest GitHub version. Direct package updates use their own release/package version and signed download URLs.
 
 The console has separate Mac and Apple TV setup/status cards, independent of direct packages. Optional `install.macos.testflight` is `{ bundleId, minOsVersion, architectures }`, with non-empty unique architectures drawn from `arm64` and `x64`. Mac packages may be empty only with a valid TestFlight declaration. Optional `install.tvos` is null or `{ bundleId, minOsVersion }`. Declare only verified system and architecture support. A declaration alone does not make an invitation available.
