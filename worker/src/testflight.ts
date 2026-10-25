@@ -1,10 +1,10 @@
 // TestFlight distribution: set-up per app, the upload the workflow makes through ourapps, and the
 // scheduled step that puts each processed build in the friends' group and sends it for beta review.
 import { AppleClient, AppleError } from "./apple.js";
-import { Db, type AppRow, type Developer, type DeveloperSecrets, type LinkState, type TestflightBuildRow } from "./db.js";
+import { Db, type AppRow, type BuildRunMetadata, type Developer, type DeveloperSecrets, type LinkState, type TestflightBuildRow, type VerifiedBuildRun } from "./db.js";
 import type { Deps, Env } from "./env.js";
 import { appleClient } from "./flow.js";
-import { dispatchAppleWorkflow, dispatchEvent, fetchBuildManifest, GithubBuildRequestError } from "./github.js";
+import { dispatchAppleWorkflow, dispatchEvent, fetchBuildManifest, GithubBuildRequestError, verifyBuildRun } from "./github.js";
 import { HttpError } from "./http.js";
 import { appleReady, loadSecrets, saveSecrets, secretsSummary } from "./secrets.js";
 import { profileType } from "./apple-platform.js";
@@ -317,13 +317,22 @@ export interface PlatformBuildReservation {
   buildNumber: string;
 }
 
-export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow): Promise<PlatformBuildReservation> {
+export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow, metadata?: BuildRunMetadata): Promise<PlatformBuildReservation> {
   if (app.platform !== "macos" && app.platform !== "tvos") throw new HttpError(400, "Build-number reservation supports macos and tvos only; ios reservation is unsupported.");
   if (!app.ascAppId) throw new HttpError(409, "Set up TestFlight for this platform before reserving a build number.");
   let secrets: DeveloperSecrets;
   try { secrets = await loadSecrets(env, app.developerId, ["githubToken", "appleIssuerId", "appleKeyId", "applePrivateKey"]); }
   catch { throw new HttpError(502, "Could not read the saved credentials for build reservation. Check account settings."); }
-  if (!secrets.githubToken) throw new HttpError(502, "Save a GitHub token with repository access and Contents: read in account settings to reserve Mac or Apple TV builds.");
+  if (!secrets.githubToken) throw new HttpError(502, `Save a GitHub token with repository access and Contents: read${metadata ? " and Actions: read" : ""} in account settings to reserve Mac or Apple TV builds.`);
+  const db = Db.from(env);
+  let verified: VerifiedBuildRun | undefined;
+  if (metadata) {
+    verified = await verifyBuildRun(env, deps, app, secrets.githubToken, metadata);
+    try {
+      const existing = await db.buildRunReservation(app.id, app.platform, app.repo, metadata);
+      if (existing) return { version: existing.version, buildNumber: existing.buildNumber };
+    } catch { throw new HttpError(502, "Could not read the verified build reservation. Retry with the same runId and runAttempt."); }
+  }
   let version: string;
   const manifestDeps: Deps = { ...deps, fetch: (input, init) => fetchBuildManifest(deps.fetch, input instanceof Request ? input.url : String(input), init?.headers) };
   try { version = (await loadManifest(env, manifestDeps, app, secrets.githubToken)).version; }
@@ -336,7 +345,11 @@ export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow): P
     throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not verify all existing Apple build numbers for this app, platform and version. Check the saved App Store Connect key has access to this app and permission to read builds, then retry. No workflow was requested; incomplete or excessive pagination also blocks allocation.");
   }
   try {
-    const buildNumber = await Db.from(env).reserveBuildNumber(app.id, app.platform, version, appleMaximum);
+    const buildNumber = await db.reserveBuildNumber(app.id, app.platform, version, appleMaximum);
+    if (verified) {
+      const saved = await db.associateBuildRun(app.id, app.platform, version, String(buildNumber), verified, deps.now().toISOString());
+      return { version: saved.version, buildNumber: saved.buildNumber };
+    }
     return { version, buildNumber: String(buildNumber) };
   } catch (err) {
     throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not atomically reserve an Apple build number. Retry after checking the build reservation database is available.");

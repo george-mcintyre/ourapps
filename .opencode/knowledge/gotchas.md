@@ -1,5 +1,7 @@
 # Gotchas
 
+- Default `Python-urllib` requests to ourapps can receive Cloudflare HTTP403/error1010 before Worker authentication. A descriptive application User-Agent reaches the expected unauthenticated401 response; keep redirect/credential protections intact. Controlled curl/Python probes and Cloudflare's Error1010 documentation confirm this behavior.
+
 - Approved TestFlight versions refresh through `refreshApprovedVersions` on public page and update reads, at most once a minute while builds are pending. Install pages re-read on return to the foreground and every visible minute; `installPage` owns listener cleanup.
 
 - `@cloudflare/vitest-pool-workers` is deprecated; this repo uses `@cloudflare/vitest-plugin`

@@ -7,6 +7,7 @@ import { HttpError, bearer, json, readJson } from "../http.js";
 import { loadSecrets } from "../secrets.js";
 import { commitUpload, reservePlatformBuild, reserveUpload } from "../testflight.js";
 import { applePlatform, profileType } from "../apple-platform.js";
+import { parseBuildRunMetadata } from "../github.js";
 
 // Verifies the per-app token; a token stored as a plain hash is rewritten as a keyed hash.
 async function requireBuildToken(request: Request, env: Env, app: AppRow): Promise<void> {
@@ -68,7 +69,15 @@ export async function buildTestflight(request: Request, env: Env, deps: Deps, ap
   if (!base) throw new HttpError(404, "unknown app");
   const app = await db.platformApp(base, platform);
   await requireBuildToken(request, env, app);
-  if (step === "reserve-build") return json(await reservePlatformBuild(env, deps, app));
+  if (step === "reserve-build") {
+    const raw = await request.text();
+    let metadata: unknown;
+    if (raw.trim()) {
+      try { metadata = JSON.parse(raw); }
+      catch { throw new HttpError(400, "Reservation metadata must be valid JSON."); }
+    }
+    return json(await reservePlatformBuild(env, deps, app, parseBuildRunMetadata(metadata)));
+  }
   const body = await readJson<Record<string, unknown>>(request);
   return json(step === "upload" ? await reserveUpload(env, deps, app, body) : await commitUpload(env, deps, app, body));
 }

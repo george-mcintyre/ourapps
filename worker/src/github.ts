@@ -1,6 +1,7 @@
 // GitHub build dispatch and read-only workflow status.
 import type { Deps, Env } from "./env.js";
-import type { AppRow, TestflightBuildRow } from "./db.js";
+import { Db, type AppRow, type BuildRunMetadata, type TestflightBuildRow, type VerifiedBuildRun } from "./db.js";
+import { HttpError } from "./http.js";
 
 export interface BuildStatus {
   state: "not-started" | "requested" | "pending" | "running" | "complete" | "failed" | "cancelled" | "unavailable";
@@ -15,9 +16,9 @@ export interface BuildStatus {
   runAttempt: number | null;
   conclusion: string | null;
   // Run timestamps and build numbers give approximate correlation, not verified app or platform identity.
-  correlation: "none" | "request-time" | "build-number" | "workflow-only" | "platform-title";
+  correlation: "none" | "request-time" | "build-number" | "workflow-only" | "platform-title" | "reservation";
   platformVerified: boolean;
-  uploadReceived: boolean;
+  uploadReceived: boolean | null;
   startedAt: string | null;
   elapsedSeconds: number | null;
   expectedSeconds: number | null;
@@ -49,7 +50,7 @@ class ActionsError extends Error {
 async function cacheKey(env: Env, kind: string, scope: unknown[]): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(scope)));
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return new URL(`/internal/build-status/v2/${kind}/${hash}`, env.PUBLIC_ORIGIN).href;
+  return new URL(`/internal/build-status/v3/${kind}/${hash}`, env.PUBLIC_ORIGIN).href;
 }
 
 function titlePlatform(run: Run): "macos" | "tvos" | null {
@@ -86,7 +87,7 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
   const empty: BuildStatus = {
     state: "not-started", checkedAt: deps.now().toISOString(), requestedAt: app.buildRequestedAt ?? null,
     reason: null, message: null, workflowName: null, runUrl: null, runId: null, runNumber: null, runAttempt: null,
-    conclusion: null, correlation: "none", platformVerified: false, uploadReceived: false, startedAt: null, elapsedSeconds: null,
+    conclusion: null, correlation: "none", platformVerified: false, uploadReceived: null, startedAt: null, elapsedSeconds: null,
     expectedSeconds: null, estimateSampleCount: 0, estimateSource: null, progressPercent: null,
   };
   if (app.buildRequestError) return { ...empty, state: "failed", reason: "dispatch-failed", message: "The build request could not be sent. Check the GitHub token and repository in settings, then request another build." };
@@ -95,7 +96,7 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
   const scope = [app.developerId, app.id, app.platform ?? "ios", app.repo, tokenSavedAt];
   const key = await cacheKey(env, "status", [...scope, app.buildRequestedAt, builds[0]?.buildNumber, builds[0]?.createdAt]);
   let cache: Cache | null = null;
-  try { cache = await caches.open("ourapps-build-status-v2"); } catch { /* GitHub reads do not require the cache. */ }
+  try { cache = await caches.open("ourapps-build-status-v3"); } catch { /* GitHub reads do not require the cache. */ }
   const cached = await readCache<BuildStatus>(cache, key, deps.now().getTime());
   if (cached) return withProgress(cached, deps.now().getTime());
   const controller = new AbortController();
@@ -123,14 +124,18 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
       message: `No identified ${platform === "macos" ? "Mac" : "Apple TV"} build run is visible. ${workflowMissing ? "No active apple-testflight.yml workflow was found." : `The apple-testflight.yml run title must explicitly identify ${platform}.`} General release runs do not establish a build for this platform.`,
     });
     const listing = await get<{ workflows: Workflow[] }>("workflows?per_page=100");
-    const workflowPath = nativeApple ? /(?:^|\/)apple-testflight\.ya?ml$/ : /(?:^|\/)release\.ya?ml$/;
+    const workflowPath = nativeApple ? /^\.github\/workflows\/apple-testflight\.yml$/ : /(?:^|\/)release\.ya?ml$/;
     const workflows = listing.workflows.filter((w) => workflowPath.test(w.path) && w.state === "active");
     if (!workflows.length && nativeApple) return missingPlatform(true);
     if (!workflows.length) return { ...empty, state: "unavailable", reason: "workflow-missing", message: "No active release.yml workflow was found for iOS in this repository." };
     const groups = await Promise.all(workflows.map(async (workflow) => ({ workflow, runs: (await get<{ workflow_runs: Run[] }>(`workflows/${workflow.id}/runs?per_page=30`)).workflow_runs })));
     const runs = groups.flatMap(({ workflow, runs }) => runs.filter((run) => run.workflow_id === workflow.id).map((run) => ({ run, workflow }))).sort((a, b) => Date.parse(b.run.created_at) - Date.parse(a.run.created_at));
+    const db = Db.from(env);
+    const reservations = nativeApple ? await db.buildRunReservations(app.id, platform, app.repo, runs.map(({ run }) => ({ runId: String(run.id), runAttempt: String(run.run_attempt) }))) : [];
+    const byAttempt = new Map(reservations.map((reservation) => [`${reservation.runId}/${reservation.runAttempt}`, reservation]));
+    const identified = runs.map((entry) => ({ ...entry, reservation: byAttempt.get(`${entry.run.id}/${entry.run.run_attempt}`) ?? null }));
     let correlation: BuildStatus["correlation"] = nativeApple ? "platform-title" : "workflow-only";
-    let candidates = nativeApple ? runs.filter(({ run }) => titlePlatform(run) === platform) : runs;
+    let candidates = nativeApple ? identified.filter(({ run, reservation }) => titlePlatform(run) === platform || (reservation && titlePlatform(run) === null)) : identified;
     if (requested !== null) {
       // GitHub timestamps have second precision; dispatch records have millisecond precision.
       candidates = candidates.filter(({ run }) => (nativeApple || run.event === "repository_dispatch") && Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000);
@@ -139,27 +144,31 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
     const active = candidates.find(({ run }) => run.status !== "completed");
     const latestUpload = builds[0];
     const uploaded = (app.platform ?? "ios") === "ios" && latestUpload && (requested === null || Date.parse(latestUpload.createdAt) >= requested)
-      ? runs.filter(({ run, workflow }) => /(?:^|\/)release\.ya?ml$/.test(workflow.path) && String(run.run_number) === latestUpload.buildNumber && Date.parse(run.created_at) <= Date.parse(latestUpload.createdAt) && (requested === null || Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000)) : [];
+      ? identified.filter(({ run, workflow }) => /(?:^|\/)release\.ya?ml$/.test(workflow.path) && String(run.run_number) === latestUpload.buildNumber && Date.parse(run.created_at) <= Date.parse(latestUpload.createdAt) && (requested === null || Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000)) : [];
     const chosen = active ?? (uploaded.length === 1 ? uploaded[0] : candidates[0]);
     if (!chosen && nativeApple) return missingPlatform(false);
     if (!chosen) return { ...empty, state: requested !== null ? "requested" : "not-started", reason: requested !== null ? "awaiting-workflow" : null, message: requested !== null ? "The request was sent; no matching repository-dispatch release run is visible in the recent workflow history." : null };
     if (!active && uploaded.length === 1 && chosen === uploaded[0]) correlation = "build-number";
-    const { run, workflow } = chosen;
+    const { run, workflow, reservation } = chosen;
+    if (reservation) correlation = "reservation";
     let state: BuildStatus["state"];
     if (["queued", "requested", "waiting", "pending"].includes(run.status)) state = "pending";
     else if (run.status === "in_progress") state = "running";
     else if (run.status === "completed") state = run.conclusion === "success" ? "complete" : run.conclusion === "cancelled" ? "cancelled" : run.conclusion ? "failed" : "unavailable";
     else state = "unavailable";
-    const titleBuild = /^Apple TestFlight (?:macos|tvos) (\S+) \((\d+)\)$/.exec(run.display_title ?? "");
-    const uploadReceived = platformBuilds.some((build) => Date.parse(build.createdAt) >= Date.parse(run.created_at)
-      && (nativeApple ? Boolean(titleBuild && build.version === titleBuild[1] && build.buildNumber === titleBuild[2]) : build.buildNumber === String(run.run_number)));
+    const titleBuild = /^Apple TestFlight (?:macos|tvos) (\d+(?:\.\d+){0,2}) \((\d+)\)$/.exec(run.display_title ?? "");
+    const pair = reservation ?? (nativeApple && titleBuild ? { version: titleBuild[1]!, buildNumber: titleBuild[2]! } : null);
+    const notBefore = new Date(Math.max(Date.parse(run.run_started_at ?? run.created_at), reservation ? Date.parse(reservation.reservedAt) : 0, reservation ? Date.parse(reservation.startedAt) : 0)).toISOString();
+    const uploadReceived = nativeApple
+      ? pair ? await db.hasBuildUpload(app.id, platform, pair.version, pair.buildNumber, notBefore) : null
+      : platformBuilds.some((build) => Date.parse(build.createdAt) >= Date.parse(run.run_started_at ?? run.created_at) && build.buildNumber === String(run.run_number));
     const status: BuildStatus = { ...empty, state, workflowName: workflow.name, runUrl: /^https:\/\/github\.com\/[^?#]+\/actions\/runs\/\d+(?:\/attempts\/\d+)?$/.test(run.html_url) ? run.html_url : null,
       runId: run.id, runNumber: run.run_number, runAttempt: run.run_attempt, conclusion: run.conclusion, correlation,
-      platformVerified: nativeApple, uploadReceived,
+      platformVerified: nativeApple && titlePlatform(run) === platform, uploadReceived,
       startedAt: run.run_started_at,
-      reason: state === "unavailable" ? "unknown-run-state" : state === "complete" && !uploadReceived ? "workflow-complete-no-upload" : null,
+      reason: state === "unavailable" ? "unknown-run-state" : state === "complete" && uploadReceived === null ? "workflow-complete-upload-unconfirmed" : state === "complete" && uploadReceived === false ? "workflow-complete-no-upload" : null,
       message: nativeApple
-        ? `Platform identified from the workflow title; app and request correlation is approximate.${state === "complete" && !uploadReceived ? " No matching upload received for this platform build." : ""}`
+        ? `${reservation ? "Build identified by a verified run-attempt reservation." : "Platform identified from the workflow title; app and request correlation is approximate."}${state === "complete" && uploadReceived === null ? " Upload receipt is unconfirmed because no version and build pair is identified." : state === "complete" && uploadReceived === false ? " No matching upload received for this platform build." : ""}`
         : "GitHub does not expose dispatch app or platform inputs in its run listing.",
       progressPercent: state === "complete" ? 100 : null };
     const samples = runs.filter(({ run: sample }) => sample.workflow_id === run.workflow_id && sample.id !== run.id && sample.status === "completed" && sample.conclusion === "success" && (!nativeApple || titlePlatform(sample) === platform)).slice(0, 5);
@@ -210,6 +219,55 @@ export async function dispatchEvent(env: Env, deps: Deps, token: string | undefi
 }
 
 export class GithubBuildRequestError extends Error {}
+
+export function parseBuildRunMetadata(body: unknown): BuildRunMetadata | undefined {
+  if (body === undefined) return undefined;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "Reservation metadata must be a JSON object containing both runId and runAttempt, or neither.");
+  const value = body as Record<string, unknown>;
+  if (!("runId" in value) && !("runAttempt" in value)) return undefined;
+  const positiveId = (input: unknown): string => {
+    if ((typeof input !== "string" || !/^\d+$/.test(input)) && typeof input !== "number") throw new HttpError(400, "runId and runAttempt must both be positive safe integers or decimal integer strings.");
+    const number = Number(input);
+    if (!Number.isSafeInteger(number) || number <= 0) throw new HttpError(400, "runId and runAttempt must both be positive safe integers or decimal integer strings.");
+    return String(number);
+  };
+  return { runId: positiveId(value.runId), runAttempt: positiveId(value.runAttempt) };
+}
+
+export async function verifyBuildRun(env: Env, deps: Deps, app: AppRow, token: string, metadata: BuildRunMetadata): Promise<VerifiedBuildRun> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const get = async <T>(path: string): Promise<T> => {
+    const response = await deps.fetch(`${env.GITHUB_API_BASE}/repos/${app.repo}/actions/${path}`, {
+      method: "GET", redirect: "manual", signal: controller.signal,
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "ourapps", "X-GitHub-Api-Version": "2022-11-28" },
+    });
+    if (response.status >= 300 && response.status < 400) throw new HttpError(502, "GitHub redirected run verification; credentials were not forwarded. Check the app repository.");
+    if (response.status === 401 || response.status === 403) throw new HttpError(502, "GitHub denied run verification. Grant the saved developer token access to this repository and Actions: read in account settings.");
+    if (response.status === 404) throw new HttpError(409, "The supplied run attempt or workflow was not found in this app repository. Check runId and runAttempt.");
+    if (!response.ok) throw new HttpError(502, "GitHub run verification is unavailable. Retry without changing runId or runAttempt.");
+    return response.json() as Promise<T>;
+  };
+  const verify = async (): Promise<VerifiedBuildRun> => {
+    const run = await get<Run & { repository?: { full_name?: string } }>(`runs/${metadata.runId}/attempts/${metadata.runAttempt}`);
+    if (String(run.id) !== metadata.runId || run.repository?.full_name?.toLowerCase() !== app.repo.toLowerCase()) throw new HttpError(400, "The supplied run does not belong to this app repository.");
+    if (String(run.run_attempt) !== metadata.runAttempt) throw new HttpError(409, "The supplied runAttempt does not match GitHub's run-attempt identity.");
+    if (titlePlatform(run) !== app.platform) throw new HttpError(400, "The GitHub run title does not identify the requested Apple platform.");
+    if (!Number.isSafeInteger(run.workflow_id) || run.workflow_id <= 0) throw new HttpError(502, "GitHub did not provide a valid workflow identity for the run.");
+    const workflow = await get<Workflow>(`workflows/${run.workflow_id}`);
+    if (workflow.id !== run.workflow_id || workflow.path !== ".github/workflows/apple-testflight.yml") throw new HttpError(400, "The supplied run must use .github/workflows/apple-testflight.yml in this app repository.");
+    if (!Number.isFinite(Date.parse(run.created_at)) || !run.run_started_at || !Number.isFinite(Date.parse(run.run_started_at))) throw new HttpError(502, "GitHub did not provide valid run-attempt timestamps; no build number was allocated.");
+    return { ...metadata, repo: app.repo.toLowerCase(), createdAt: new Date(run.created_at).toISOString(), startedAt: new Date(run.run_started_at).toISOString() };
+  };
+  try {
+    return await Promise.race([verify(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new HttpError(502, "GitHub run verification timed out. Retry with the same runId and runAttempt.")); }, 8000);
+    })]);
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(502, "GitHub run verification could not be completed; no build number was allocated.");
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
 
 // Only release-asset endpoints can redirect; redirected requests carry fixed public headers.
 export async function fetchBuildManifest(fetcher: typeof fetch, source: string, headers?: HeadersInit): Promise<Response> {
