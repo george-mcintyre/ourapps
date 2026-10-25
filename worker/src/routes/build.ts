@@ -8,14 +8,37 @@ import { loadSecrets } from "../secrets.js";
 import { commitUpload, reservePlatformBuild, reserveUpload } from "../testflight.js";
 import { applePlatform, profileType } from "../apple-platform.js";
 import { parseBuildRunMetadata } from "../github.js";
+import { AppleError } from "../apple.js";
+import { appleClient } from "../flow.js";
+import { sanitiseUploadFile } from "../upload-diagnostic.js";
 
 // Verifies the per-app token; a token stored as a plain hash is rewritten as a keyed hash.
-async function requireBuildToken(request: Request, env: Env, app: AppRow): Promise<void> {
+async function requireBuildToken(request: Request, env: Env, app: AppRow, rehash = true): Promise<void> {
   const given = bearer(request);
   if (!given) throw new HttpError(401, "unauthorised");
   const match = await hashMatches(masterKeys(env), "build-token", given, app.buildTokenHash);
   if (!match.ok) throw new HttpError(401, "unauthorised");
-  if (match.rewrite) await Db.from(env).rehashBuildToken(app.id, await tokenHash(masterKeys(env), "build-token", given));
+  if (match.rewrite && rehash) await Db.from(env).rehashBuildToken(app.id, await tokenHash(masterKeys(env), "build-token", given));
+}
+
+export async function buildUploadFileStatus(request: Request, env: Env, deps: Deps, appId: string, platformName: string, fileId: string): Promise<Response> {
+  const db = Db.from(env);
+  const app = await db.appById(appId);
+  if (!app) throw new HttpError(404, "unknown app");
+  await requireBuildToken(request, env, app, false);
+  const platform = applePlatform(platformName);
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(fileId)) throw new HttpError(404, "unknown upload file");
+  const row = await db.testflightBuild(app.id, fileId, platform);
+  if (!row) throw new HttpError(404, "unknown upload file");
+  try {
+    const secrets = await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"], false);
+    const attributes = await appleClient(env, deps, secrets).readBuildUploadFile(fileId);
+    return json({ platform, version: /^\d+(?:\.\d+){0,2}$/.test(row.version) && row.version.length <= 32 ? row.version : "invalid",
+      buildNumber: /^\d+$/.test(row.buildNumber) && row.buildNumber.length <= 32 ? row.buildNumber : "invalid", uploadFileId: fileId,
+      recordedState: /^[a-z-]{1,32}$/.test(row.state) ? row.state : "invalid", appleFile: sanitiseUploadFile(attributes) });
+  } catch (error) {
+    return json({ error: "Apple upload-file lookup failed", appleStatus: error instanceof AppleError ? error.status : null }, 502);
+  }
 }
 
 // GET or HEAD /api/build/:app/signing - everything an iPhone build needs: ourapps' certificate, its
