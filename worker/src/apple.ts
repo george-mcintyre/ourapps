@@ -1,6 +1,7 @@
 // App Store Connect API: ES256 tokens, the signing certificate, App IDs, profiles and TestFlight.
 import type { Deps, Env } from "./env.js";
 import { applePlatformName, type ApplePlatform } from "./apple-platform.js";
+import { numericBuildNumber } from "./build-number.js";
 
 export interface AppleCredentials {
   issuerId: string;
@@ -46,6 +47,13 @@ interface Resource<A = Record<string, unknown>> {
   relationships?: Record<string, { data?: Linkage | Linkage[] }>;
 }
 
+interface BuildNumberPage {
+  data: Resource<{ version: string }>[];
+  included?: Resource<{ version?: string; platform?: string }>[];
+  links?: { next?: string | null };
+  meta?: { paging?: { total?: number } };
+}
+
 export class AppleClient {
   // One token serves every call in a request, keeping CPU time inside the Workers free plan.
   private token: { value: string; until: number } | null = null;
@@ -58,13 +66,15 @@ export class AppleClient {
     return this.token.value;
   }
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const token = await this.bearer();
     const res = await this.deps.fetch(`${this.env.APPLE_API_BASE}${path}`, {
       method,
+      signal, redirect: "manual",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    if (res.status >= 300 && res.status < 400) throw new AppleError(res.status, "Apple redirected the request; no credentials were forwarded.");
     if (res.status === 204) return undefined as T;
     const json = (await res.json().catch(() => ({}))) as T & { errors?: { detail?: string; title?: string }[] };
     if (!res.ok) {
@@ -212,6 +222,45 @@ export class AppleClient {
     return b
       ? { id: b.id, processingState: b.attributes.processingState, usesNonExemptEncryption: b.attributes.usesNonExemptEncryption ?? null, expirationDate: b.attributes.expirationDate ?? null, expired: b.attributes.expired === true }
       : null;
+  }
+
+  async maximumBuildNumber(storeAppId: string, version: string, platform: ApplePlatform): Promise<number> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const scan = async () => {
+      const base = new URL(this.env.APPLE_API_BASE);
+      const query = new URLSearchParams({ "filter[app]": storeAppId, "filter[preReleaseVersion.version]": version, "filter[preReleaseVersion.platform]": applePlatformName(platform), include: "app,preReleaseVersion", "fields[builds]": "version,app,preReleaseVersion", "fields[preReleaseVersions]": "version,platform", limit: "200" });
+      let next: string | null = `/v1/builds?${query}`;
+      let maximum = 0;
+      let seen = 0;
+      const visited = new Set<string>();
+      for (let page = 0; next && page < 10; page++) {
+        const url: URL = new URL(next, base);
+        if (url.origin !== base.origin || url.pathname !== "/v1/builds" || url.username || url.password || visited.has(url.href)) throw new Error("Apple returned an invalid build pagination link.");
+        visited.add(url.href);
+        for (const [key, value] of query) url.searchParams.set(key, value);
+        const result: BuildNumberPage = await this.call<BuildNumberPage>("GET", `${url.pathname}${url.search}`, undefined, controller.signal);
+        if (!Array.isArray(result.data) || result.data.length > 200) throw new Error("Apple returned an invalid builds page.");
+        for (const build of result.data) {
+          const app = asList(build.relationships?.app?.data)[0];
+          const releaseId = asList(build.relationships?.preReleaseVersion?.data)[0];
+          const release = result.included?.find((item) => item.type === "preReleaseVersions" && item.id === releaseId?.id);
+          if (app?.id !== storeAppId || release?.attributes.version !== version || release.attributes.platform !== applePlatformName(platform)) throw new Error("Apple build scope could not be verified.");
+          maximum = Math.max(maximum, numericBuildNumber(build.attributes.version));
+        }
+        seen += result.data.length;
+        next = result.links?.next ?? null;
+        if (next !== null && typeof next !== "string") throw new Error("Apple returned an invalid build pagination link.");
+        if (!next && typeof result.meta?.paging?.total === "number" && result.meta.paging.total > seen) throw new Error("Apple build pagination was incomplete.");
+      }
+      if (next) throw new Error("Apple build pagination exceeded ten pages.");
+      return maximum;
+    };
+    try {
+      return await Promise.race([scan(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(new Error("Apple build lookup timed out.")); }, 8000);
+      })]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
   // Apple's export compliance answer for one build.

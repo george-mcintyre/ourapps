@@ -25,7 +25,7 @@ GET /api/dev/me
 
 `secrets.github` false means the developer has not saved a GitHub token; the console cannot read private release assets or ask for fresh builds until they do (only they can do that, at `/dev/settings`). `secrets.apple` false means TestFlight cannot be set up.
 
-The developer's GitHub token needs Contents read and write for release access and build requests, plus Actions read for workflow status and successful-run timing. Missing status permissions do not establish whether a build is running; `buildStatus` reports unavailable with guidance.
+The developer's GitHub token needs Contents read and write for releases and iOS build requests, plus Actions read for workflow status and successful-run timing. Mac/Apple TV requests use Actions write and private-release Contents read. `buildStatus` reports unavailable with guidance when status permissions are missing.
 
 ## Supported app types (summary)
 
@@ -127,7 +127,7 @@ Never print the build token or put it in a file or a chat: it lets its holder fe
 
 TestFlight status responses also include `buildStatus`: `state` is `not-started`, `requested`, `pending`, `running`, `complete`, `failed`, `cancelled` or `unavailable`. The object supplies `workflowName`, `runUrl`, `runNumber`, `runAttempt`, `conclusion`, `requestedAt`, `startedAt`, `checkedAt`, `elapsedSeconds`, `expectedSeconds`, `estimateSampleCount`, `progressPercent`, `correlation`, `platformVerified`, `reason` and `message`. A running estimate uses the median of up to five successful runs of the selected workflow, from run start to actual job completion. Without samples the estimate is null. Progress stays below 100 until GitHub reports success.
 
-Workflow matching by request time or uploaded iOS build number is approximate. GitHub's run listing does not expose dispatch app/platform inputs; `platformVerified` is false. Manual Apple build input is separate from GitHub `run_number`. Workflow Complete is not proof of upload, Apple approval or an open TestFlight invitation. Status is cached at the edge for 15 seconds, successful historical run/attempt durations for 15 minutes; no credentials are cached. The console refreshes the panel every visible 30 seconds and on return to the page.
+Mac/TV matching requires `apple-testflight.yml` and canonical display title `Apple TestFlight macos|tvos VERSION (BUILD)`, with `correlation: "platform-title"` and `platformVerified: true` for that title's platform only. App/request association remains approximate. iOS uses `release.yml` with request-time or uploaded-build-number matching. Manual Apple build input is separate from GitHub `run_number`. `uploadReceived` reports a matching platform/version/build upload row within the run window, not verified run identity; successful workflow state without it uses `reason: "workflow-complete-no-upload"` and displays Finished without upload. Status is cached at the edge for 15 seconds, successful historical run/attempt durations for 15 minutes; no credentials are cached. The console refreshes the panel every visible 30 seconds and on return to the page.
 
 ```
 GET /api/dev/apps/:id/release

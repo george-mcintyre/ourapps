@@ -5,7 +5,7 @@ import { buildStatusCard } from "./buildStatus.js";
 const status: BuildStatus = {
   state: "running", checkedAt: "2026-10-25T03:00:00Z", requestedAt: null, reason: null, message: null,
   workflowName: "release", runUrl: "https://github.com/example/app/actions/runs/1", runId: 1,
-  runNumber: 12, runAttempt: 1, conclusion: null, correlation: "request-time", platformVerified: false,
+  runNumber: 12, runAttempt: 1, conclusion: null, correlation: "request-time", platformVerified: false, uploadReceived: false,
   startedAt: "2026-10-25T02:55:00Z", elapsedSeconds: 300, expectedSeconds: 600,
   estimateSampleCount: 4, estimateSource: "median-successful-job-completion", progressPercent: 50,
 };
@@ -26,10 +26,14 @@ describe("GitHub status panel", () => {
     expect(card).not.toContain("<progress");
   });
 
-  it("separates workflow success from Apple readiness", () => {
-    const card = buildStatusCard({ ...status, state: "complete", conclusion: "success" }).html;
+  it("requires matching upload evidence before showing a completed build", () => {
+    const missing = buildStatusCard({ ...status, state: "complete", conclusion: "success" }).html;
+    expect(missing).toContain("Finished without upload");
+    expect(missing).toContain("no matching upload has reached ourapps");
+    const card = buildStatusCard({ ...status, state: "complete", conclusion: "success", uploadReceived: true }).html;
     expect(card).toContain("Complete");
-    expect(card).toContain("Apple processing, review and installation availability are separate");
+    expect(card).toContain("ourapps has received a matching upload");
+    expect(card).not.toContain("Apple processing, review and installation availability are separate");
   });
 
   it("shows permission guidance and failed/cancelled outcomes", () => {

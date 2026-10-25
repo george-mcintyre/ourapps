@@ -227,7 +227,9 @@ app's page in ourapps shows each step and what it waits for.
 
 ## 5. Releases and fresh builds
 
-The console reads workflow runs from `release.yml` and `apple-testflight.yml` using the developer's GitHub token with Actions read permission. Its build-status panel distinguishes request, queue, running, successful completion, failure and cancellation. Time-based progress estimates use successful run/job timings. Run matching is approximate because the GitHub run listing does not expose app/platform dispatch inputs; workflow success is separate from Apple processing and TestFlight readiness.
+The console reads workflow runs using Actions read permission. iOS uses `release.yml`; Mac and Apple TV use only `apple-testflight.yml` with `run-name: Apple TestFlight ${{ inputs.platform }} ${{ inputs.version }} (${{ inputs.build }})`. That title identifies the platform; app/request association remains approximate. A successful workflow with no matching platform/version/build upload is shown as Finished without upload. Running progress estimates use successful same-platform workflow/job timings.
+
+Mac/Apple TV requests require Actions write and Contents read. They dispatch `apple-testflight.yml` on the repository's default branch with `platform`, validated manifest `version`, reserved numeric `build`, and `upload: "true"`. Build numbers are atomically reserved per app/platform/version, above known Apple and local builds; failed dispatches consume reservations. Coordinate all uploaders through this allocation path: uploads made elsewhere after Apple's lookup are outside that lock, and Apple can reject a duplicate build number. Missing workflow or permissions are explicit errors, never an iOS fallback. Private GitHub release-asset redirects are followed only to approved GitHub asset hosts without forwarding credentials.
 
 The release carries `my-app.json` with `install.ios` set to
 `{ "bundleId": "<bundle id>", "testflight": "<.testflight.url from step 3, or https://testflight.apple.com when null>" }`;

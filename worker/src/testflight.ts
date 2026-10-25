@@ -4,11 +4,13 @@ import { AppleClient, AppleError } from "./apple.js";
 import { Db, type AppRow, type Developer, type LinkState, type TestflightBuildRow } from "./db.js";
 import type { Deps, Env } from "./env.js";
 import { appleClient } from "./flow.js";
-import { dispatchEvent } from "./github.js";
+import { dispatchAppleWorkflow, dispatchEvent, fetchBuildManifest, GithubBuildRequestError } from "./github.js";
 import { HttpError } from "./http.js";
 import { appleReady, loadSecrets, saveSecrets, secretsSummary } from "./secrets.js";
 import { profileType } from "./apple-platform.js";
 import { signingRequest } from "./signing.js";
+import { loadManifest } from "./upstream.js";
+import { BuildNumberError } from "./build-number.js";
 
 export const BETA_GROUP = "Friends (ourapps)";
 // A build stops working 90 days after upload; a new one is asked for this long before.
@@ -310,15 +312,38 @@ export async function refreshApprovedVersions(env: Env, deps: Deps, app: AppRow)
   }
 }
 
-// Asks the app's repository to run its release workflow; the outcome is kept on the app.
+// Requests the platform's workflow and keeps the dispatch outcome on the app.
 export async function requestBuild(env: Env, deps: Deps, app: AppRow, reason: string): Promise<void> {
   const at = deps.now().toISOString();
   let error: string | null = null;
   try {
-    const secrets = await loadSecrets(env, app.developerId, ["githubToken"]);
-    await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason, ...(app.platform && app.platform !== "ios" ? { platform: app.platform } : {}) });
+    const secrets = await loadSecrets(env, app.developerId, app.platform === "macos" || app.platform === "tvos" ? ["githubToken", "appleIssuerId", "appleKeyId", "applePrivateKey"] : ["githubToken"]);
+    if (app.platform === "macos" || app.platform === "tvos") {
+      if (!secrets.githubToken) throw new GithubBuildRequestError("Save a GitHub token with repository access, Contents: read and Actions: write in account settings to request Mac or Apple TV builds.");
+      let version: string;
+      const manifestDeps: Deps = { ...deps, fetch: (input, init) => fetchBuildManifest(deps.fetch, input instanceof Request ? input.url : String(input), init?.headers) };
+      try { version = (await loadManifest(env, manifestDeps, app, secrets.githubToken)).version; }
+      catch (err) {
+        if (err instanceof GithubBuildRequestError) throw err;
+        throw new GithubBuildRequestError("Could not load a valid latest my-app.json. Publish a release with a valid manifest and version, and grant the GitHub token Contents: read in account settings.");
+      }
+      let appleMaximum: number;
+      try {
+        if (!app.ascAppId) throw new Error("App Store Connect app is not configured.");
+        appleMaximum = await appleClient(env, deps, secrets).maximumBuildNumber(app.ascAppId, version, app.platform);
+      } catch (err) {
+        if (err instanceof BuildNumberError) throw err;
+        throw new GithubBuildRequestError("Could not verify all existing Apple build numbers for this app, platform and version. Check the saved App Store Connect key has access to this app and permission to read builds, then retry. No workflow was requested; incomplete or excessive pagination also blocks allocation.");
+      }
+      const buildNumber = await Db.from(env).reserveBuildNumber(app.id, app.platform, version, appleMaximum);
+      await dispatchAppleWorkflow(env, deps, secrets.githubToken, app.repo, app.platform, version, buildNumber);
+    } else {
+      await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason });
+    }
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
+    error = app.platform === "macos" || app.platform === "tvos"
+      ? err instanceof GithubBuildRequestError || err instanceof BuildNumberError ? err.message : "Could not request the Apple platform build. Check the repository, latest manifest, and GitHub token with Contents: read and Actions: write in account settings."
+      : err instanceof Error ? err.message : String(err);
   }
   app.buildRequestedAt = at;
   app.buildRequestError = error;

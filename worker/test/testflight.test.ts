@@ -107,7 +107,11 @@ describe("TestFlight", () => {
       const response = await handle(api(cookie, "GET", `/api/dev/apps/${appId}/testflight${suffix}`), env, d);
       expect(response.status).toBe(200);
       const view = await response.json();
-      expect(view).toMatchObject({ platform: suffix.slice(1) || "ios", buildStatus: { state: "running", workflowName: "release", runId: 123, elapsedSeconds: 60, expectedSeconds: null, progressPercent: null, platformVerified: false } });
+      if (suffix === "/macos" || suffix === "/tvos") {
+        expect(view).toMatchObject({ platform: suffix.slice(1), buildStatus: { state: "unavailable", reason: "workflow-missing", workflowName: null, runId: null, elapsedSeconds: null, platformVerified: false } });
+      } else {
+        expect(view).toMatchObject({ platform: suffix.slice(1) || "ios", buildStatus: { state: "running", workflowName: "release", runId: 123, elapsedSeconds: 60, expectedSeconds: null, progressPercent: null, platformVerified: false } });
+      }
       expect(JSON.stringify(view)).not.toContain("ghp_");
     }
     expect(github.calls.filter((call) => call.url.includes("/actions/workflows?"))).toHaveLength(3);

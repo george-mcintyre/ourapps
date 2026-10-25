@@ -80,7 +80,8 @@ TL;DR at `/dev/guide#tldr` is the definitive list.
 
 1. Sign in with GitHub at `/dev`.
 2. Settings: paste your App Store Connect API key (issuer id, key id, `.p8` contents), your
-   Apple team id, and a GitHub fine-grained token with Contents read and write and Actions read on the app's
+   Apple team id, and a GitHub fine-grained token with Contents read and write, plus Actions read
+   (read and write for Mac/Apple TV build requests), on the app's
    repository. They are stored encrypted per account. Saving the Apple key sets up iPhone
    signing (Settings, iPhone signing).
 3. Add the app: name, repository `owner/name`, the iPhone bundle ID, and the App Store style
