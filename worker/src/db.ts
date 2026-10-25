@@ -2,6 +2,7 @@
 import type { ScreenshotPlatform } from "@my/store-shared";
 import type { Env } from "./env.js";
 import type { ApplePlatform } from "./apple-platform.js";
+import { BuildNumberError, numericBuildNumber } from "./build-number.js";
 
 export interface Developer {
   id: string;
@@ -441,6 +442,18 @@ export class Db {
   async testflightBuilds(appId: string, limit = 5, platform: ApplePlatform = "ios"): Promise<TestflightBuildRow[]> {
     const res = await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND platform = ? ORDER BY id DESC LIMIT ?").bind(appId, platform, limit).all<Raw>();
     return res.results.map((r) => row<TestflightBuildRow>(r)!);
+  }
+
+  async reserveBuildNumber(appId: string, platform: "macos" | "tvos", version: string, appleMaximum: number): Promise<number> {
+    const local = await this.d1.prepare("SELECT MAX(CAST(build_number AS INTEGER)) AS maximum, SUM(CASE WHEN build_number = '' OR build_number GLOB '*[^0-9]*' THEN 1 ELSE 0 END) AS invalid FROM testflight_builds WHERE app_id = ? AND platform = ? AND version = ?")
+      .bind(appId, platform, version).first<{ maximum: number | null; invalid: number | null }>();
+    if (local?.invalid) throw new BuildNumberError("A local Apple build number is not an integer; an automatic build number cannot be reserved.");
+    const seed = Math.max(numericBuildNumber(String(appleMaximum)), numericBuildNumber(String(local?.maximum ?? 0)));
+    if (seed >= Number.MAX_SAFE_INTEGER) throw new BuildNumberError("The Apple build number range is exhausted; an automatic build number cannot be reserved.");
+    const reserved = await this.d1.prepare("INSERT INTO build_number_reservations (app_id, platform, version, counter) VALUES (?, ?, ?, ?) ON CONFLICT (app_id, platform, version) DO UPDATE SET counter = MAX(build_number_reservations.counter + 1, excluded.counter) WHERE build_number_reservations.counter < 9007199254740991 RETURNING counter")
+      .bind(appId, platform, version, seed + 1).first<{ counter: number }>();
+    if (!reserved || !Number.isSafeInteger(reserved.counter)) throw new BuildNumberError("The Apple build number range is exhausted; an automatic build number cannot be reserved.");
+    return reserved.counter;
   }
 
   // Builds still on their way to friends, least recently checked first; optionally one app's only.

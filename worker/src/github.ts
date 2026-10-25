@@ -15,8 +15,9 @@ export interface BuildStatus {
   runAttempt: number | null;
   conclusion: string | null;
   // Run timestamps and build numbers give approximate correlation, not verified app or platform identity.
-  correlation: "none" | "request-time" | "build-number" | "workflow-only";
+  correlation: "none" | "request-time" | "build-number" | "workflow-only" | "platform-title";
   platformVerified: boolean;
+  uploadReceived: boolean;
   startedAt: string | null;
   elapsedSeconds: number | null;
   expectedSeconds: number | null;
@@ -32,6 +33,7 @@ interface Run {
   run_number: number;
   run_attempt: number;
   name: string;
+  display_title?: string;
   html_url: string;
   event: string;
   status: string;
@@ -47,7 +49,12 @@ class ActionsError extends Error {
 async function cacheKey(env: Env, kind: string, scope: unknown[]): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(scope)));
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return new URL(`/internal/build-status/${kind}/${hash}`, env.PUBLIC_ORIGIN).href;
+  return new URL(`/internal/build-status/v2/${kind}/${hash}`, env.PUBLIC_ORIGIN).href;
+}
+
+function titlePlatform(run: Run): "macos" | "tvos" | null {
+  const marker = /^Apple TestFlight (macos|tvos)(?:\s|$)/.exec(run.display_title ?? "");
+  return marker?.[1] === "macos" ? "macos" : marker?.[1] === "tvos" ? "tvos" : null;
 }
 
 async function readCache<T>(cache: Cache | null, key: string, now: number): Promise<T | null> {
@@ -79,7 +86,7 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
   const empty: BuildStatus = {
     state: "not-started", checkedAt: deps.now().toISOString(), requestedAt: app.buildRequestedAt ?? null,
     reason: null, message: null, workflowName: null, runUrl: null, runId: null, runNumber: null, runAttempt: null,
-    conclusion: null, correlation: "none", platformVerified: false, startedAt: null, elapsedSeconds: null,
+    conclusion: null, correlation: "none", platformVerified: false, uploadReceived: false, startedAt: null, elapsedSeconds: null,
     expectedSeconds: null, estimateSampleCount: 0, estimateSource: null, progressPercent: null,
   };
   if (app.buildRequestError) return { ...empty, state: "failed", reason: "dispatch-failed", message: "The build request could not be sent. Check the GitHub token and repository in settings, then request another build." };
@@ -88,40 +95,53 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
   const scope = [app.developerId, app.id, app.platform ?? "ios", app.repo, tokenSavedAt];
   const key = await cacheKey(env, "status", [...scope, app.buildRequestedAt, builds[0]?.buildNumber, builds[0]?.createdAt]);
   let cache: Cache | null = null;
-  try { cache = await caches.open("ourapps-build-status"); } catch { /* GitHub reads do not require the cache. */ }
+  try { cache = await caches.open("ourapps-build-status-v2"); } catch { /* GitHub reads do not require the cache. */ }
   const cached = await readCache<BuildStatus>(cache, key, deps.now().getTime());
   if (cached) return withProgress(cached, deps.now().getTime());
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const get = async <T>(path: string): Promise<T> => {
     const response = await deps.fetch(`${env.GITHUB_API_BASE}/repos/${app.repo}/actions/${path}`, {
-      signal: controller.signal,
+      signal: controller.signal, redirect: "manual",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "ourapps", "X-GitHub-Api-Version": "2022-11-28" },
     });
+    if (response.status >= 300 && response.status < 400) throw new ActionsError("github-redirect", "GitHub redirected the status request; no credentials were forwarded. Check the repository in app settings.");
     if (response.status === 401 || response.status === 403) throw new ActionsError("actions-access", "GitHub denied access. In account settings, save a valid token with access to this repository and Actions: read. GitHub rate limits can also deny access; retry later.");
     if (response.status === 404) throw new ActionsError("repository-access", "GitHub could not find the repository or workflow. Check repository access and Actions: read on the token in account settings.");
     if (!response.ok) throw new ActionsError("github-error", "GitHub build status is unavailable. Retry shortly.");
     return response.json() as Promise<T>;
   };
   const read = async (): Promise<BuildStatus> => {
+    const platform = app.platform ?? "ios";
+    const nativeApple = platform !== "ios";
+    const requested = app.buildRequestedAt ? Date.parse(app.buildRequestedAt) : null;
+    const platformBuilds = builds.filter((build) => (build.platform ?? "ios") === platform);
+    const outstanding = requested !== null && !platformBuilds.some((build) => Date.parse(build.createdAt) >= requested);
+    const missingPlatform = (workflowMissing: boolean): BuildStatus => ({
+      ...empty, state: outstanding ? "requested" : "unavailable",
+      reason: workflowMissing ? "workflow-missing" : "platform-run-unidentified",
+      message: `No identified ${platform === "macos" ? "Mac" : "Apple TV"} build run is visible. ${workflowMissing ? "No active apple-testflight.yml workflow was found." : `The apple-testflight.yml run title must explicitly identify ${platform}.`} General release runs do not establish a build for this platform.`,
+    });
     const listing = await get<{ workflows: Workflow[] }>("workflows?per_page=100");
-    const workflows = listing.workflows.filter((w) => /(?:^|\/)(?:release|apple-testflight)\.ya?ml$/.test(w.path) && w.state === "active");
-    if (!workflows.length) return { ...empty, state: "unavailable", reason: "workflow-missing", message: "No active release.yml or apple-testflight.yml workflow was found in this repository." };
+    const workflowPath = nativeApple ? /(?:^|\/)apple-testflight\.ya?ml$/ : /(?:^|\/)release\.ya?ml$/;
+    const workflows = listing.workflows.filter((w) => workflowPath.test(w.path) && w.state === "active");
+    if (!workflows.length && nativeApple) return missingPlatform(true);
+    if (!workflows.length) return { ...empty, state: "unavailable", reason: "workflow-missing", message: "No active release.yml workflow was found for iOS in this repository." };
     const groups = await Promise.all(workflows.map(async (workflow) => ({ workflow, runs: (await get<{ workflow_runs: Run[] }>(`workflows/${workflow.id}/runs?per_page=30`)).workflow_runs })));
     const runs = groups.flatMap(({ workflow, runs }) => runs.filter((run) => run.workflow_id === workflow.id).map((run) => ({ run, workflow }))).sort((a, b) => Date.parse(b.run.created_at) - Date.parse(a.run.created_at));
-    const requested = app.buildRequestedAt ? Date.parse(app.buildRequestedAt) : null;
-    let correlation: BuildStatus["correlation"] = "workflow-only";
-    let candidates = runs;
+    let correlation: BuildStatus["correlation"] = nativeApple ? "platform-title" : "workflow-only";
+    let candidates = nativeApple ? runs.filter(({ run }) => titlePlatform(run) === platform) : runs;
     if (requested !== null) {
       // GitHub timestamps have second precision; dispatch records have millisecond precision.
-      candidates = runs.filter(({ run, workflow }) => /(?:^|\/)release\.ya?ml$/.test(workflow.path) && run.event === "repository_dispatch" && Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000);
-      correlation = "request-time";
+      candidates = candidates.filter(({ run }) => (nativeApple || run.event === "repository_dispatch") && Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000);
+      if (!nativeApple) correlation = "request-time";
     }
     const active = candidates.find(({ run }) => run.status !== "completed");
     const latestUpload = builds[0];
     const uploaded = (app.platform ?? "ios") === "ios" && latestUpload && (requested === null || Date.parse(latestUpload.createdAt) >= requested)
       ? runs.filter(({ run, workflow }) => /(?:^|\/)release\.ya?ml$/.test(workflow.path) && String(run.run_number) === latestUpload.buildNumber && Date.parse(run.created_at) <= Date.parse(latestUpload.createdAt) && (requested === null || Date.parse(run.created_at) >= Math.floor(requested / 1000) * 1000)) : [];
     const chosen = active ?? (uploaded.length === 1 ? uploaded[0] : candidates[0]);
+    if (!chosen && nativeApple) return missingPlatform(false);
     if (!chosen) return { ...empty, state: requested !== null ? "requested" : "not-started", reason: requested !== null ? "awaiting-workflow" : null, message: requested !== null ? "The request was sent; no matching repository-dispatch release run is visible in the recent workflow history." : null };
     if (!active && uploaded.length === 1 && chosen === uploaded[0]) correlation = "build-number";
     const { run, workflow } = chosen;
@@ -130,13 +150,19 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
     else if (run.status === "in_progress") state = "running";
     else if (run.status === "completed") state = run.conclusion === "success" ? "complete" : run.conclusion === "cancelled" ? "cancelled" : run.conclusion ? "failed" : "unavailable";
     else state = "unavailable";
+    const titleBuild = /^Apple TestFlight (?:macos|tvos) (\S+) \((\d+)\)$/.exec(run.display_title ?? "");
+    const uploadReceived = platformBuilds.some((build) => Date.parse(build.createdAt) >= Date.parse(run.created_at)
+      && (nativeApple ? Boolean(titleBuild && build.version === titleBuild[1] && build.buildNumber === titleBuild[2]) : build.buildNumber === String(run.run_number)));
     const status: BuildStatus = { ...empty, state, workflowName: workflow.name, runUrl: /^https:\/\/github\.com\/[^?#]+\/actions\/runs\/\d+(?:\/attempts\/\d+)?$/.test(run.html_url) ? run.html_url : null,
       runId: run.id, runNumber: run.run_number, runAttempt: run.run_attempt, conclusion: run.conclusion, correlation,
+      platformVerified: nativeApple, uploadReceived,
       startedAt: run.run_started_at,
-      reason: state === "unavailable" ? "unknown-run-state" : null,
-      message: "Workflow status only. GitHub does not expose dispatch app or platform inputs here; completion does not establish TestFlight availability.",
+      reason: state === "unavailable" ? "unknown-run-state" : state === "complete" && !uploadReceived ? "workflow-complete-no-upload" : null,
+      message: nativeApple
+        ? `Platform identified from the workflow title; app and request correlation is approximate.${state === "complete" && !uploadReceived ? " No matching upload received for this platform build." : ""}`
+        : "GitHub does not expose dispatch app or platform inputs in its run listing.",
       progressPercent: state === "complete" ? 100 : null };
-    const samples = runs.filter(({ run: sample }) => sample.workflow_id === run.workflow_id && sample.id !== run.id && sample.status === "completed" && sample.conclusion === "success").slice(0, 5);
+    const samples = runs.filter(({ run: sample }) => sample.workflow_id === run.workflow_id && sample.id !== run.id && sample.status === "completed" && sample.conclusion === "success" && (!nativeApple || titlePlatform(sample) === platform)).slice(0, 5);
     const durations = await Promise.all(samples.map(async ({ run: sample }) => {
       try {
         const timingKey = await cacheKey(env, "duration", [...scope, sample.workflow_id, sample.id, sample.run_attempt]);
@@ -175,8 +201,81 @@ export async function dispatchEvent(env: Env, deps: Deps, token: string | undefi
   if (!token) throw new Error("no GitHub token saved in account settings");
   const res = await deps.fetch(`${env.GITHUB_API_BASE}/repos/${repo}/dispatches`, {
     method: "POST",
+    redirect: "manual",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "ourapps" },
     body: JSON.stringify({ event_type: event, client_payload: payload }),
   });
+  if (res.status >= 300 && res.status < 400) throw new Error("GitHub redirected the repository dispatch; no credentials were forwarded. Check the repository in app settings.");
   if (res.status !== 204) throw new Error(`repository_dispatch to ${repo}: ${res.status} ${await res.text()}`);
+}
+
+export class GithubBuildRequestError extends Error {}
+
+// Only release-asset endpoints can redirect; redirected requests carry fixed public headers.
+export async function fetchBuildManifest(fetcher: typeof fetch, source: string, headers?: HeadersInit): Promise<Response> {
+  const fail = () => new GithubBuildRequestError("The manifest redirect was rejected. Only HTTPS GitHub release-asset redirects to approved GitHub asset hosts are allowed; credentials were not forwarded.");
+  try {
+    let url = new URL(source);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) throw fail();
+    const api = url.hostname === "api.github.com";
+    const asset = api && /^\/repos\/[\w.-]+\/[\w.-]+\/releases\/assets\/\d+$/.test(url.pathname) && !url.search;
+    const publicHeaders = { Accept: "application/octet-stream", "User-Agent": "ourapps" };
+    const visited = new Set<string>();
+    for (let hop = 0; hop <= 3; hop++) {
+      if (visited.has(url.href)) throw fail();
+      visited.add(url.href);
+      const response = await fetcher(url.href, { method: "GET", redirect: "manual", headers: hop === 0 && api ? headers : publicHeaders });
+      if (response.status < 300 || response.status >= 400) return response;
+      if (!asset || hop === 3 || ![301, 302, 303, 307, 308].includes(response.status)) throw fail();
+      const location = response.headers.get("Location");
+      if (!location) throw fail();
+      const target = new URL(location, url);
+      if (target.protocol !== "https:" || target.username || target.password || target.port || target.hash
+        || !["release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(target.hostname)) throw fail();
+      url = target;
+    }
+    throw fail();
+  } catch (error) {
+    if (error instanceof GithubBuildRequestError) throw error;
+    throw new GithubBuildRequestError("The manifest could not be fetched safely. Check the latest release asset; request details and credentials are not included in this error.");
+  }
+}
+
+export async function dispatchAppleWorkflow(env: Env, deps: Deps, token: string | undefined, repo: string, platform: "macos" | "tvos", version: string, buildNumber: number): Promise<void> {
+  const name = platform === "macos" ? "Mac" : "Apple TV";
+  if (!token) throw new GithubBuildRequestError(`Save a GitHub token with repository access, Contents: read and Actions: write in account settings to request a ${name} build.`);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const send = async (path: string, body?: unknown): Promise<Response> => {
+    const response = await deps.fetch(`${env.GITHUB_API_BASE}/repos/${repo}${path}`, {
+      method: body === undefined ? "GET" : "POST", signal: controller.signal, redirect: "manual",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json", "User-Agent": "ourapps", "X-GitHub-Api-Version": "2022-11-28" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (response.status >= 300 && response.status < 400) throw new GithubBuildRequestError(`GitHub redirected the ${name} build request; no credentials were forwarded. Check the repository in app settings.`);
+    if (response.status === 401 || response.status === 403) throw new GithubBuildRequestError(`GitHub denied the ${name} build request. Check repository access, Contents: read and Actions: ${body === undefined ? "read" : "write"} on the token in account settings. Workflow dispatch requires Actions: write. GitHub rate limits may also block requests.`);
+    if (response.status === 404) throw new GithubBuildRequestError(path === ""
+      ? "GitHub could not find the repository. Check the repository and token access in account settings."
+      : `GitHub could not find apple-testflight.yml for the ${name} build. Publish .github/workflows/apple-testflight.yml on the repository's default branch and grant the token Actions: write. No release workflow was requested.`);
+    if (!response.ok) throw new GithubBuildRequestError(`GitHub could not request the ${name} build (status ${response.status}). Check that apple-testflight.yml accepts platform, version, build and upload inputs, and that the token has Actions: write.`);
+    return response;
+  };
+  const dispatch = async () => {
+    const metadata = await (await send("")).json() as { default_branch?: unknown };
+    if (typeof metadata.default_branch !== "string" || !metadata.default_branch.trim()) throw new GithubBuildRequestError("GitHub did not report the repository's default branch; the build was not requested.");
+    const workflowPath = "/actions/workflows/apple-testflight.yml";
+    const workflow = await (await send(workflowPath)).json() as { state?: string };
+    if (workflow.state !== "active") throw new GithubBuildRequestError(`Enable .github/workflows/apple-testflight.yml on the repository's default branch before requesting a ${name} build.`);
+    if (!Number.isSafeInteger(buildNumber) || buildNumber < 1) throw new GithubBuildRequestError("A safe numeric Apple build number was not reserved; the workflow was not requested.");
+    const response = await send(`${workflowPath}/dispatches`, { ref: metadata.default_branch, inputs: { platform, version, build: String(buildNumber), upload: "true" } });
+    if (response.status !== 204) throw new GithubBuildRequestError(`GitHub did not confirm the ${name} workflow dispatch; check apple-testflight.yml and Actions: write in account settings.`);
+  };
+  try {
+    await Promise.race([dispatch(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new GithubBuildRequestError(`The ${name} workflow request timed out. Check GitHub Actions before retrying; dispatch may have been received.`)); }, 8000);
+    })]);
+  } catch (error) {
+    if (error instanceof GithubBuildRequestError) throw error;
+    throw new GithubBuildRequestError(`GitHub could not request the ${name} workflow. Check repository access and Actions: write in account settings, then retry.`);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
 }
