@@ -39,6 +39,8 @@ Optional `screenshotsByPlatform.macos`, `.windows` and `.tvos` use the existing 
 
 ### Apple platform specification
 
+Manual Mac/TV workflows can POST `/api/build/:app/:platform/testflight/reserve-build` using the existing per-app bearer build token, with no body. It returns only `{ version: string, buildNumber: string }`, with `Cache-Control: no-store`, and does not dispatch a workflow. The same validated-manifest/Apple-reconciliation/atomic allocator serves dashboard requests. Reserve once inside the executing job only when no reserved version/build inputs were supplied; dashboard inputs skip reservation. No iOS reservation alias exists. Failed later work consumes the reserved number; retries reserve another number. Invalid/cross-app tokens return 401, missing setup 409, incomplete reconciliation 502.
+
 `release.apple.iosOnMac` and `/latest.apple.iosOnMac` are null or `{ version, testflightUrl }`. This is an explicitly verified iPhone/iPad compatibility version for Macs with Apple silicon, not the native/Catalyst `macos` path. It requires a ready external iOS build and open invitation and that beta group's `iosBuildsAvailableForAppleSiliconMac` flag to be true; false/unknown/unavailable means null. No Intel support is implied.
 
 Public update specification: `/api/public/links/:id/latest` adds `apple: { ios, macos, tvos }`. Each entry is null or `{ version, testflightUrl }`, requiring that exact platform's build to be available for external testers and its invitation open. Existing `testflightVersion` and `testflightUrl` are iOS-only aliases. No platform falls back to another platform's approval or to the latest GitHub version. Direct package updates use their own release/package version and signed download URLs.

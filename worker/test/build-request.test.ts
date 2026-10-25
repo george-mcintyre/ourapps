@@ -3,11 +3,14 @@ import { Db, type AppRow } from "../src/db.js";
 import type { Env } from "../src/env.js";
 import { saveSecrets } from "../src/secrets.js";
 import { requestBuild } from "../src/testflight.js";
-import { GH_TOKEN, applePem, clearDb, createSkull, fakeFetch, githubRoutes, jsonRes, manifest, signIn, testDeps, testEnv, type Call, type TestDeps } from "./helpers.js";
+import { handle } from "../src/index.js";
+import { GH_TOKEN, api, applePem, clearDb, createSkull, fakeFetch, githubRoutes, jsonRes, manifest, signIn, testDeps, testEnv, type Call, type TestDeps } from "./helpers.js";
 
 let env: Env;
 let deps: TestDeps;
 let app: AppRow;
+let cookie: string;
+let buildToken: string;
 const repository = "GET api.github.com/repos/o/skull";
 const workflow = `${repository}/actions/workflows/apple-testflight.yml`;
 const dispatch = "POST api.github.com/repos/o/skull/actions/workflows/apple-testflight.yml/dispatches";
@@ -35,8 +38,9 @@ beforeEach(async () => {
   env = testEnv();
   await clearDb(env);
   deps = testDeps(fakeFetch(githubRoutes()).fetch);
-  const cookie = await signIn(env, deps);
+  cookie = await signIn(env, deps);
   const created = await createSkull(env, deps, cookie);
+  buildToken = created.buildToken;
   app = (await Db.from(env).appById(created.appId))!;
   await saveSecrets(env, app.developerId, { githubToken: GH_TOKEN, appleIssuerId: "issuer", appleKeyId: "key", applePrivateKey: await applePem() }, deps.now());
   for (const platform of ["macos", "tvos"] as const) {
@@ -44,6 +48,103 @@ beforeEach(async () => {
     target.ascAppId = "asc";
     await Db.from(env).setAppTestflight(target);
   }
+});
+
+describe("build-token build-number reservation", () => {
+  const path = (id: string, platform = "macos") => `/api/build/${id}/${platform}/testflight/reserve-build`;
+  const headers = () => ({ Authorization: `Bearer ${buildToken}` });
+
+  it.each(["macos", "tvos"])("returns only string version/buildNumber for %s without dispatching", async (platform) => {
+    const github = fakeFetch(platformRoutes());
+    const response = await handle(api(null, "POST", path(app.id, platform), undefined, headers()), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const result = await response.json();
+    expect(result).toEqual({ version: manifest.version, buildNumber: "1" });
+    expect(Object.keys(result as object).sort()).toEqual(["buildNumber", "version"]);
+    expect(JSON.stringify(result)).not.toContain(GH_TOKEN);
+    expect(JSON.stringify(result)).not.toContain(buildToken);
+    expect(github.calls.some((call) => call.method !== "GET")).toBe(false);
+    expect(github.calls.some((call) => call.url.includes("/actions/"))).toBe(false);
+    expect((await Db.from(env).platformApp(app, platform as "macos" | "tvos")).buildRequestedAt).toBeNull();
+  });
+
+  it.each([undefined, "invalid"])("rejects missing or invalid build token %s", async (token) => {
+    const github = fakeFetch(platformRoutes());
+    const response = await handle(api(null, "POST", path(app.id), undefined, token ? { Authorization: `Bearer ${token}` } : {}), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(401);
+    expect(github.calls).toHaveLength(0);
+  });
+
+  it("rejects a token belonging to another app", async () => {
+    const other = await createSkull(env, deps, cookie);
+    const github = fakeFetch(platformRoutes());
+    const response = await handle(api(null, "POST", path(app.id), undefined, { Authorization: `Bearer ${other.buildToken}` }), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(401);
+    expect(github.calls).toHaveLength(0);
+  });
+
+  it.each(["ios", "unknown"])("rejects unsupported platform %s", async (platform) => {
+    const github = fakeFetch(platformRoutes());
+    const response = await handle(api(null, "POST", path(app.id, platform), undefined, headers()), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(400);
+    if (platform === "ios") expect(await response.json()).toEqual({ error: "Build-number reservation supports macos and tvos only; ios reservation is unsupported." });
+    expect(github.calls).toHaveLength(0);
+  });
+
+  it("returns 409 when the target platform is not set up", async () => {
+    const target = await Db.from(env).platformApp(app, "macos");
+    target.ascAppId = null;
+    await Db.from(env).setAppTestflight(target);
+    const github = fakeFetch(platformRoutes());
+    const response = await handle(api(null, "POST", path(app.id), undefined, headers()), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Set up TestFlight for this platform before reserving a build number." });
+    expect(github.calls).toHaveLength(0);
+  });
+
+  it("returns a sanitized 502 without allocating when Apple reconciliation fails", async () => {
+    const github = fakeFetch({ ...platformRoutes(), [appleBuilds]: () => new Response(GH_TOKEN, { status: 403 }) });
+    const response = await handle(api(null, "POST", path(app.id), undefined, headers()), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(502);
+    const result = await response.text();
+    expect(result).toContain("Could not verify all existing Apple build numbers");
+    expect(result).not.toContain(GH_TOKEN);
+    expect(github.calls.some((call) => call.method !== "GET")).toBe(false);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM build_number_reservations").first()).toEqual({ count: 0 });
+  });
+
+  it("shares the atomic allocator with simultaneous dashboard POSTs", async () => {
+    const github = fakeFetch(platformRoutes());
+    const d = { ...deps, fetch: github.fetch };
+    const [reserved, dashboard] = await Promise.all([
+      handle(api(null, "POST", path(app.id), undefined, headers()), env, d),
+      handle(api(cookie, "POST", `/api/dev/apps/${app.id}/testflight/macos/build`), env, d),
+    ]);
+    expect(reserved.status).toBe(200);
+    expect(dashboard.status).toBe(200);
+    const result = await reserved.json() as { version: string; buildNumber: string };
+    const sent = github.calls.filter((call) => call.method === "POST");
+    expect(sent).toHaveLength(1);
+    const dispatched = JSON.parse(sent[0]!.body!).inputs;
+    expect([result.buildNumber, dispatched.build].sort()).toEqual(["1", "2"]);
+    expect(result.version).toBe(dispatched.version);
+    expect(await env.DB.prepare("SELECT counter FROM build_number_reservations WHERE app_id = ? AND platform = 'macos'").bind(app.id).first()).toEqual({ counter: 2 });
+  });
+
+  it("reserves using the safely redirected private release manifest", async () => {
+    const github = fakeFetch({ ...platformRoutes(),
+      "GET api.github.com/repos/o/skull/releases/assets/1": () => new Response(null, { status: 302, headers: { Location: "https://release-assets.githubusercontent.com/object?signature=private" } }),
+      "GET release-assets.githubusercontent.com/object": (call) => {
+        expect([...call.headers.keys()].sort()).toEqual(["accept", "user-agent"]);
+        return jsonRes({ ...manifest, version: "3.2.1" });
+      },
+    });
+    const response = await handle(api(null, "POST", path(app.id), undefined, headers()), env, { ...deps, fetch: github.fetch });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: "3.2.1", buildNumber: "1" });
+    expect(github.calls.some((call) => call.method !== "GET")).toBe(false);
+  });
 });
 
 async function upload(platform: "ios" | "macos" | "tvos", buildNumber: string, version = manifest.version) {

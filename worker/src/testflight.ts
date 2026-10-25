@@ -1,7 +1,7 @@
 // TestFlight distribution: set-up per app, the upload the workflow makes through ourapps, and the
 // scheduled step that puts each processed build in the friends' group and sends it for beta review.
 import { AppleClient, AppleError } from "./apple.js";
-import { Db, type AppRow, type Developer, type LinkState, type TestflightBuildRow } from "./db.js";
+import { Db, type AppRow, type Developer, type DeveloperSecrets, type LinkState, type TestflightBuildRow } from "./db.js";
 import type { Deps, Env } from "./env.js";
 import { appleClient } from "./flow.js";
 import { dispatchAppleWorkflow, dispatchEvent, fetchBuildManifest, GithubBuildRequestError } from "./github.js";
@@ -312,37 +312,53 @@ export async function refreshApprovedVersions(env: Env, deps: Deps, app: AppRow)
   }
 }
 
-// Requests the platform's workflow and keeps the dispatch outcome on the app.
+export interface PlatformBuildReservation {
+  version: string;
+  buildNumber: string;
+}
+
+export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow): Promise<PlatformBuildReservation> {
+  if (app.platform !== "macos" && app.platform !== "tvos") throw new HttpError(400, "Build-number reservation supports macos and tvos only; ios reservation is unsupported.");
+  if (!app.ascAppId) throw new HttpError(409, "Set up TestFlight for this platform before reserving a build number.");
+  let secrets: DeveloperSecrets;
+  try { secrets = await loadSecrets(env, app.developerId, ["githubToken", "appleIssuerId", "appleKeyId", "applePrivateKey"]); }
+  catch { throw new HttpError(502, "Could not read the saved credentials for build reservation. Check account settings."); }
+  if (!secrets.githubToken) throw new HttpError(502, "Save a GitHub token with repository access and Contents: read in account settings to reserve Mac or Apple TV builds.");
+  let version: string;
+  const manifestDeps: Deps = { ...deps, fetch: (input, init) => fetchBuildManifest(deps.fetch, input instanceof Request ? input.url : String(input), init?.headers) };
+  try { version = (await loadManifest(env, manifestDeps, app, secrets.githubToken)).version; }
+  catch (err) {
+    throw new HttpError(502, err instanceof GithubBuildRequestError ? err.message : "Could not load a valid latest my-app.json. Publish a release with a valid manifest and version, and grant the GitHub token Contents: read in account settings.");
+  }
+  let appleMaximum: number;
+  try { appleMaximum = await appleClient(env, deps, secrets).maximumBuildNumber(app.ascAppId, version, app.platform); }
+  catch (err) {
+    throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not verify all existing Apple build numbers for this app, platform and version. Check the saved App Store Connect key has access to this app and permission to read builds, then retry. No workflow was requested; incomplete or excessive pagination also blocks allocation.");
+  }
+  try {
+    const buildNumber = await Db.from(env).reserveBuildNumber(app.id, app.platform, version, appleMaximum);
+    return { version, buildNumber: String(buildNumber) };
+  } catch (err) {
+    throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not atomically reserve an Apple build number. Retry after checking the build reservation database is available.");
+  }
+}
+
+// Requests the platform's workflow using one reserved input and keeps the dispatch outcome on the app.
 export async function requestBuild(env: Env, deps: Deps, app: AppRow, reason: string): Promise<void> {
   const at = deps.now().toISOString();
   let error: string | null = null;
   try {
-    const secrets = await loadSecrets(env, app.developerId, app.platform === "macos" || app.platform === "tvos" ? ["githubToken", "appleIssuerId", "appleKeyId", "applePrivateKey"] : ["githubToken"]);
+    const secrets = await loadSecrets(env, app.developerId, ["githubToken"]);
     if (app.platform === "macos" || app.platform === "tvos") {
       if (!secrets.githubToken) throw new GithubBuildRequestError("Save a GitHub token with repository access, Contents: read and Actions: write in account settings to request Mac or Apple TV builds.");
-      let version: string;
-      const manifestDeps: Deps = { ...deps, fetch: (input, init) => fetchBuildManifest(deps.fetch, input instanceof Request ? input.url : String(input), init?.headers) };
-      try { version = (await loadManifest(env, manifestDeps, app, secrets.githubToken)).version; }
-      catch (err) {
-        if (err instanceof GithubBuildRequestError) throw err;
-        throw new GithubBuildRequestError("Could not load a valid latest my-app.json. Publish a release with a valid manifest and version, and grant the GitHub token Contents: read in account settings.");
-      }
-      let appleMaximum: number;
-      try {
-        if (!app.ascAppId) throw new Error("App Store Connect app is not configured.");
-        appleMaximum = await appleClient(env, deps, secrets).maximumBuildNumber(app.ascAppId, version, app.platform);
-      } catch (err) {
-        if (err instanceof BuildNumberError) throw err;
-        throw new GithubBuildRequestError("Could not verify all existing Apple build numbers for this app, platform and version. Check the saved App Store Connect key has access to this app and permission to read builds, then retry. No workflow was requested; incomplete or excessive pagination also blocks allocation.");
-      }
-      const buildNumber = await Db.from(env).reserveBuildNumber(app.id, app.platform, version, appleMaximum);
-      await dispatchAppleWorkflow(env, deps, secrets.githubToken, app.repo, app.platform, version, buildNumber);
+      const reservation = await reservePlatformBuild(env, deps, app);
+      await dispatchAppleWorkflow(env, deps, secrets.githubToken, app.repo, app.platform, reservation.version, Number(reservation.buildNumber));
     } else {
       await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason });
     }
   } catch (err) {
     error = app.platform === "macos" || app.platform === "tvos"
-      ? err instanceof GithubBuildRequestError || err instanceof BuildNumberError ? err.message : "Could not request the Apple platform build. Check the repository, latest manifest, and GitHub token with Contents: read and Actions: write in account settings."
+      ? err instanceof GithubBuildRequestError || err instanceof HttpError ? err.message : "Could not request the Apple platform build. Check the repository, latest manifest, and GitHub token with Contents: read and Actions: write in account settings."
       : err instanceof Error ? err.message : String(err);
   }
   app.buildRequestedAt = at;
