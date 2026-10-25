@@ -72,8 +72,11 @@ describe("desktop install choices", () => {
     expect(page).toContain("run the new installer");
     expect(page).toContain("Installed apps, Uninstall");
     expect(page).toContain("Windows Application Control");
+    expect(page).not.toContain("Unsigned · test download");
     expect(page).toContain("Signing does not remove those checks");
     expect(page).not.toContain("notarized");
+    const unsigned: Release = { ...windows, install: { ...windows.install, windows: { packages: windows.install.windows!.packages.map(p => ({ ...p, signing: "unsigned" })) } } };
+    expect(desktopPanel(unsigned, "windows", true).html).toContain("Unsigned · test download");
   });
 
   it("shows matching approved versions separately from direct downloads", () => {
