@@ -290,18 +290,21 @@ export class AppleClient {
     return res.links?.next ? null : false;
   }
 
-  async betaGroupDistribution(groupId: string): Promise<{ isInternalGroup: boolean | null; publicLinkEnabled: boolean | null; publicLink: string | null; testerCount: number | null }> {
+  async betaGroupDistribution(groupId: string): Promise<{ isInternalGroup: boolean | null; publicLinkEnabled: boolean | null; publicLink: string | null }> {
     const id = encodeURIComponent(groupId);
     const res = await this.call<{ data: Resource<{ isInternalGroup?: boolean; publicLinkEnabled?: boolean; publicLink?: string }> }>("GET", `/v1/betaGroups/${id}`);
     if (res.data?.type !== "betaGroups" || res.data.id !== groupId || !res.data.attributes) throw new AppleError(502, "Invalid Apple testing group response.");
-    const testers = await this.call<{ data: Linkage[]; meta?: { paging?: { total?: number } }; links?: { next?: string | null } }>("GET", `/v1/betaGroups/${id}/relationships/betaTesters?limit=1`);
-    if (!Array.isArray(testers.data) || testers.data.length > 1 || testers.data.some(tester => tester.type !== "betaTesters" || typeof tester.id !== "string")) throw new AppleError(502, "Invalid Apple tester count response.");
-    const total = testers.meta?.paging?.total;
-    const testerCount = typeof total === "number" && Number.isSafeInteger(total) && total >= testers.data.length ? total : !testers.links?.next && total === undefined ? testers.data.length : null;
     const a = res.data.attributes;
     return { isInternalGroup: typeof a.isInternalGroup === "boolean" ? a.isInternalGroup : null,
       publicLinkEnabled: typeof a.publicLinkEnabled === "boolean" ? a.publicLinkEnabled : null,
-      publicLink: typeof a.publicLink === "string" ? a.publicLink : null, testerCount };
+      publicLink: typeof a.publicLink === "string" ? a.publicLink : null };
+  }
+
+  async betaGroupTesterCount(groupId: string): Promise<number | null> {
+    const testers = await this.call<{ data: Linkage[]; meta?: { paging?: { total?: number } }; links?: { next?: string | null } }>("GET", `/v1/betaGroups/${encodeURIComponent(groupId)}/relationships/betaTesters?limit=1`);
+    if (!Array.isArray(testers.data) || testers.data.length > 1 || testers.data.some(tester => tester.type !== "betaTesters" || typeof tester.id !== "string")) throw new AppleError(502, "Invalid Apple tester count response.");
+    const total = testers.meta?.paging?.total;
+    return typeof total === "number" && Number.isSafeInteger(total) && total >= testers.data.length ? total : !testers.links?.next && total === undefined ? testers.data.length : null;
   }
 
   // Apple then makes the build available to its external groups as soon as beta review approves it.

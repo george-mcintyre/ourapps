@@ -57,7 +57,7 @@ describe("read-only Apple distribution status", () => {
     expect(text).not.toContain(secret);
     expect(text).not.toContain(token);
     expect(text).not.toContain(invitation);
-    expect(JSON.parse(text)).toMatchObject({ platform: "tvos", group: { id: "group", publicLinkEnabled: true, publicLinkMatchesConfigured: true, isInternalGroup: false, testerCount: 0 }, builds: [{ version: "0.6.0", buildNumber: "1", recordedState: "approved", externalBuildState: "BETA_APPROVED", autoNotifyEnabled: true, inConfiguredGroup: true }] });
+    expect(JSON.parse(text)).toMatchObject({ platform: "tvos", status: "complete", errors: [], group: { id: "group", publicLinkEnabled: true, publicLinkMatchesConfigured: true, isInternalGroup: false, testerCount: 0 }, builds: [{ version: "0.6.0", buildNumber: "1", recordedState: "approved", externalBuildState: "BETA_APPROVED", autoNotifyEnabled: true, inConfiguredGroup: true }] });
     expect(stub.calls).toHaveLength(4);
     expect(stub.calls.every(call => call.method === "GET")).toBe(true);
     expect(await db.testflightBuilds(app.id, 6, "tvos")).toEqual(before);
@@ -125,17 +125,39 @@ describe("read-only Apple distribution status", () => {
   });
 
   it.each([302, 401, 403, 404, 500])("sanitises Apple error %s", async status => {
-    const stub = fakeFetch({ [groupPath]: () => jsonRes({ errors: [{ detail: secret }] }, status) });
+    const stub = fakeFetch({ ...routes(), [groupPath]: () => jsonRes({ errors: [{ detail: secret }] }, status) });
     const response = await handle(request(), env, { ...deps, fetch: stub.fetch });
-    expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: "Apple distribution lookup failed", appleStatus: status });
-    expect(stub.calls).toHaveLength(1);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain(secret);
+    expect(JSON.parse(text)).toMatchObject({ status: "partial", errors: [{ operation: "group", buildId: null, appleStatus: status }], group: { publicLinkEnabled: null }, builds: [{ externalBuildState: "BETA_APPROVED", inConfiguredGroup: true }] });
+    expect(stub.calls).toHaveLength(4);
   });
 
   it("rejects a mismatched group response", async () => {
-    const stub = fakeFetch({ [groupPath]: () => jsonRes({ data: { id: secret, type: "betaGroups", attributes: {} } }) });
+    const stub = fakeFetch({ ...routes(), [groupPath]: () => jsonRes({ data: { id: secret, type: "betaGroups", attributes: {} } }) });
     const response = await handle(request(), env, { ...deps, fetch: stub.fetch });
-    expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: "Apple distribution lookup failed", appleStatus: 502 });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain(secret);
+    expect(JSON.parse(text)).toMatchObject({ status: "partial", errors: [{ operation: "group", buildId: null, appleStatus: 502 }] });
+  });
+
+  it.each([
+    [testersPath, "tester-count", null],
+    ["GET api.appstoreconnect.apple.com/v1/builds/build/buildBetaDetail", "build-detail", "build"],
+    [membershipPath, "build-groups", "build"],
+  ])("identifies a denied %s operation without discarding independent evidence", async (path, operation, buildId) => {
+    const stub = fakeFetch({ ...routes(), [path!]: () => jsonRes({ errors: [{ detail: secret }] }, 403) });
+    const response = await handle(request(), env, { ...deps, fetch: stub.fetch });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain(secret);
+    const data = JSON.parse(text);
+    expect(data).toMatchObject({ status: "partial", errors: [{ operation, buildId, appleStatus: 403 }], group: { publicLinkEnabled: true } });
+    if (operation === "tester-count") expect(data).toMatchObject({ group: { testerCount: null }, builds: [{ inConfiguredGroup: true, autoNotifyEnabled: true }] });
+    if (operation === "build-detail") expect(data.builds[0]).toMatchObject({ externalBuildState: null, autoNotifyEnabled: null, inConfiguredGroup: true });
+    if (operation === "build-groups") expect(data.builds[0]).toMatchObject({ externalBuildState: "BETA_APPROVED", inConfiguredGroup: null });
+    expect(stub.calls.every(call => call.method === "GET")).toBe(true);
   });
 });
