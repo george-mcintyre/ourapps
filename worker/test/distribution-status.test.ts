@@ -14,7 +14,7 @@ let cookie: string;
 const secret = "PRIVATE_DIAGNOSTIC_VALUE";
 const groupPath = "GET api.appstoreconnect.apple.com/v1/betaGroups/group";
 const testersPath = "GET api.appstoreconnect.apple.com/v1/betaGroups/group/relationships/betaTesters";
-const membershipPath = "GET api.appstoreconnect.apple.com/v1/builds/build/betaGroups";
+const membershipPath = "GET api.appstoreconnect.apple.com/v1/betaGroups/group/relationships/builds";
 const invitation = "https://testflight.apple.com/join/Example";
 
 function request(bearer = token, platform = "tvos") {
@@ -26,7 +26,7 @@ function routes() {
     [groupPath]: () => jsonRes({ data: { id: "group", type: "betaGroups", attributes: { publicLinkEnabled: true, isInternalGroup: false, publicLink: invitation, name: secret } } }),
     [testersPath]: () => jsonRes({ data: [], meta: { paging: { total: 0 } } }),
     "GET api.appstoreconnect.apple.com/v1/builds/build/buildBetaDetail": () => jsonRes({ data: { id: "detail", attributes: { externalBuildState: "BETA_APPROVED", autoNotifyEnabled: true, secret } } }),
-    [membershipPath]: () => jsonRes({ data: [{ id: "group", type: "betaGroups", attributes: { secret } }] }),
+    [membershipPath]: () => jsonRes({ data: [{ id: "build", type: "builds" }] }),
   };
 }
 
@@ -59,6 +59,8 @@ describe("read-only Apple distribution status", () => {
     expect(text).not.toContain(invitation);
     expect(JSON.parse(text)).toMatchObject({ platform: "tvos", status: "complete", errors: [], group: { id: "group", publicLinkEnabled: true, publicLinkMatchesConfigured: true, isInternalGroup: false, testerCount: 0 }, builds: [{ version: "0.6.0", buildNumber: "1", recordedState: "approved", externalBuildState: "BETA_APPROVED", autoNotifyEnabled: true, inConfiguredGroup: true }] });
     expect(stub.calls).toHaveLength(4);
+    expect(stub.calls.some(call => call.url.endsWith("/v1/betaGroups/group/relationships/builds?limit=200"))).toBe(true);
+    expect(stub.calls.some(call => call.url.includes("/builds/build/betaGroups"))).toBe(false);
     expect(stub.calls.every(call => call.method === "GET")).toBe(true);
     expect(await db.testflightBuilds(app.id, 6, "tvos")).toEqual(before);
     expect(await db.secretsBlob(app.developerId)).toBe(blob);
@@ -117,7 +119,7 @@ describe("read-only Apple distribution status", () => {
 
   it("reports absent membership and a nonzero tester total precisely", async () => {
     const stub = fakeFetch({ ...routes(),
-      [membershipPath]: () => jsonRes({ data: [{ id: "other-group", type: "betaGroups" }] }),
+      [membershipPath]: () => jsonRes({ data: [{ id: "other-build", type: "builds" }] }),
       [testersPath]: () => jsonRes({ data: [{ id: secret, type: "betaTesters" }], meta: { paging: { total: 42 } } }),
     });
     const response = await handle(request(), env, { ...deps, fetch: stub.fetch });

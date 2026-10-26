@@ -284,10 +284,10 @@ export class AppleClient {
   }
 
   async buildInBetaGroup(buildId: string, groupId: string): Promise<boolean | null> {
-    const res = await this.call<{ data: Resource[]; links?: { next?: string | null } }>("GET", `/v1/builds/${encodeURIComponent(buildId)}/betaGroups?limit=200`);
-    if (!Array.isArray(res.data) || res.data.length > 200 || res.data.some(group => group.type !== "betaGroups" || typeof group.id !== "string")) throw new AppleError(502, "Invalid Apple build groups response.");
-    if (res.data.some(group => group.id === groupId)) return true;
-    return res.links?.next ? null : false;
+    const res = await this.call<{ data: Linkage[]; links?: { next?: string | null }; meta?: { paging?: { total?: number } } }>("GET", `/v1/betaGroups/${encodeURIComponent(groupId)}/relationships/builds?limit=200`);
+    if (!Array.isArray(res.data) || res.data.length > 200 || res.data.some(build => build.type !== "builds" || typeof build.id !== "string")) throw new AppleError(502, "Invalid Apple group builds response.");
+    if (res.data.some(build => build.id === buildId)) return true;
+    return res.links?.next || (res.meta?.paging?.total ?? 0) > res.data.length ? null : false;
   }
 
   async betaGroupDistribution(groupId: string): Promise<{ isInternalGroup: boolean | null; publicLinkEnabled: boolean | null; publicLink: string | null }> {

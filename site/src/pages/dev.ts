@@ -749,13 +749,15 @@ export function platformDeliveryStatus(app: DevApp, platform: "macos" | "tvos", 
     "waiting-for-upload": `No ${name} upload has arrived for this request. GitHub's matching platform run is shown below.`,
     processing: `Apple is processing the ${name} upload for ${version}.`,
     "in-review": `The ${name} upload for ${version} is with Apple's beta review${latest?.submittedAt ? `, submitted ${ago(latest.submittedAt)}` : ""}.`,
-    approved: `Apple approved the ${name} build; its invitation is not open yet.`,
+    approved: t.invitation.state === "open"
+      ? `Apple approved the ${name} build and the testing group's invitation is open. Group assignment and distribution still need checking before ourapps confirms testing availability. No new upload is needed while those checks are pending.`
+      : `Apple approved the ${name} build, but its public invitation is not accepting testers. Check the testing group's public link settings in App Store Connect.`,
     "link-closed": `The ${name} build is available at Apple, but its public invitation is closed. Check the platform's testing group in App Store Connect.`,
     open: `The ${name} invitation is open.`,
     rejected: latest?.message || `Apple did not approve this ${name} build. Open App Store Connect for its review feedback.`,
     failed: latest?.message || `The ${name} upload failed. Check the matching workflow run for its error.`,
   };
-  return html`<p>${pill(waiting ? `Awaiting ${name} upload` : STAGE_PILL[t.stage][0], waiting ? "accent" : STAGE_PILL[t.stage][1])}</p><p class="small muted">${messages[t.stage]}</p>`;
+  return html`<p>${pill(waiting ? `Awaiting ${name} upload` : t.stage === "approved" ? "Approved, awaiting testing availability" : STAGE_PILL[t.stage][0], waiting ? "accent" : STAGE_PILL[t.stage][1])}</p><p class="small muted">${messages[t.stage]}</p>`;
 }
 
 export async function saveMacBuildType(root: HTMLElement, appId: string): Promise<void> {
@@ -786,7 +788,7 @@ export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", 
     ${platform === "macos" ? html`<div class="field mt-s"><label for="mac-build-type">Mac build type</label><select id="mac-build-type" data-mac-build-type data-saved-type="${t.profileType === "MAC_APP_STORE" ? "native" : "catalyst"}"><option value="catalyst" ${t.profileType !== "MAC_APP_STORE" ? "selected" : ""}>Mac Catalyst: iPhone/iPad app built for Mac</option><option value="native" ${t.profileType === "MAC_APP_STORE" ? "selected" : ""}>Native macOS app target</option></select><div class="hint">Choose the type built by the app's Xcode target. Both run as Mac applications; they need different distribution profiles. For a configured app, Save changes also saves this choice.</div>${t.setUp ? html`<p class="small">Configured signing: <b>${t.profileType === "MAC_APP_STORE" ? "Native macOS" : "Mac Catalyst"}</b>.</p><button type="button" class="btn sm secondary" data-platform-type>Save Mac build type</button>` : ""}</div>` : ""}
     <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
     ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
-    ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
+    ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : t.stage === "approved" && t.invitation.state === "open" ? "" : html`<p class="small muted">${name} invitation unavailable.</p>`}
     <div data-github-status>${buildStatusCard(t.buildStatus)}</div><div data-platform-builds>${buildTable(t)}</div><div data-platform-error></div></div>`;
 }
 

@@ -33,6 +33,7 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 ## Where to change X
 
 - Read-only Apple distribution diagnosis: `buildDistributionStatus` in `worker/src/routes/build.ts`, GET `/api/build/:app/:platform/testflight/distribution` with the app build token. Reads actual group membership, tester count and notification settings without identities/secrets or local/Apple writes; incomplete evidence is null. `worker/test/distribution-status.test.ts` covers ownership, disabled reads and no-rewrite guarantees.
+- Apple build membership is read through `/v1/betaGroups/{group}/relationships/builds`; the published Apple specification has no GET from a build to betaGroups, only POST/DELETE relationship operations in that direction. Check documented operations before attributing a403 to key roles.
 
 - Mac build-type saves: `site/src/pages/dev.ts` shares `saveMacBuildType` between Save changes and Save Mac build type; configured changes use owner-authorized profile repair and confirm persisted status before completion. `site/src/macBuildType.test.ts` covers unchanged, disabled, incomplete and retry cases. General app writes do not store `nativeMac`.
 
