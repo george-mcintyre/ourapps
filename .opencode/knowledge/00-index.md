@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- Mac build-type saves: `site/src/pages/dev.ts` shares `saveMacBuildType` between Save changes and Save Mac build type; configured changes use owner-authorized profile repair and confirm persisted status before completion. `site/src/macBuildType.test.ts` covers unchanged, disabled, incomplete and retry cases. General app writes do not store `nativeMac`.
+
 - Target selection: `shared/src/targets.ts` defines `ios`, `android`, `web`, `macos`, `windows`, `tvos`; `web` maps to manifest `install.pwa`. Migration `worker/migrations/0018_target_selection.sql` adds six checked, default-enabled flags; `worker/src/db.ts` reads them and updates one flag. `site/src/targets.ts` renders switches, retains disabled section content and restores saved state after errors.
 - Target routes: owner session or manage key writes `PUT /api/dev/apps/:id/targets/:target` with exactly `{ enabled: boolean }`; `setTarget` in `worker/src/routes/dev.ts` checks ownership and changes selection only. `GET /api/build/:app/targets` in `worker/src/routes/build.ts` reads all six flags using that app's build token without token rehashing; it cannot write selection.
 - Public target delivery: `projectDelivery` in `worker/src/flow.ts` filters cloned declarations and Apple readiness before `worker/src/routes/public.ts` signs share-page and latest responses. `deliveryRevision` uses `sha256Hex` over version, unsigned install declarations and readiness; signed-address renewal leaves it stable. `deliveryChanged` in `site/src/pages/public.ts` compares version separately and then revision; all-disabled pages retain app details with no install options.

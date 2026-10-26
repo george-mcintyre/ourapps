@@ -271,6 +271,10 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
 
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (root.dataset.appSaving) return;
+    root.dataset.appSaving = "true";
+    const saveControls = '#app-form button[type="submit"], #macos-testflight-card button, #macos-testflight-card select';
+    root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(saveControls).forEach(control => control.disabled = true);
     const fd = new FormData(form);
     const body: Record<string, unknown> = {};
     for (const s of SECTIONS) for (const f of s.fields) body[f.key] = String(fd.get(f.key) ?? "");
@@ -278,9 +282,12 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
     body.screenshots = lines("all");
     body.screenshotsByPlatform = Object.fromEntries(SCREENSHOT_PLATFORMS.map((p) => [p, lines(p)]));
     body.showOnPage = fd.get("showOnPage") === "on";
+    let listingSaved = false;
     try {
       if (appId) {
         await api("PUT", `/api/dev/apps/${appId}`, body);
+        listingSaved = true;
+        await saveMacBuildType(root, appId);
         toast("Saved");
         navigate(`/dev/apps/${appId}`);
       } else {
@@ -289,8 +296,11 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
         navigate(`/dev/apps/${res.app.id}`);
       }
     } catch (err) {
-      showError(root, err);
+      showError(root, listingSaved ? new Error(`App details saved. Mac build type could not be confirmed: ${err instanceof Error ? err.message : String(err)}`) : err);
       root.querySelector("#error")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    } finally {
+      delete root.dataset.appSaving;
+      root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>(saveControls).forEach(control => control.disabled = false);
     }
   };
   root.querySelector<HTMLButtonElement>("#rotate")?.addEventListener("click", async () => {
@@ -748,12 +758,32 @@ export function platformDeliveryStatus(app: DevApp, platform: "macos" | "tvos", 
   return html`<p>${pill(waiting ? `Awaiting ${name} upload` : STAGE_PILL[t.stage][0], waiting ? "accent" : STAGE_PILL[t.stage][1])}</p><p class="small muted">${messages[t.stage]}</p>`;
 }
 
+export async function saveMacBuildType(root: HTMLElement, appId: string): Promise<void> {
+  const type = root.querySelector<HTMLSelectElement>("[data-mac-build-type]");
+  if (!type || type.value === type.dataset.savedType) return;
+  if (!targetEnabled(root, "macos")) throw new Error("Enable the Mac target before saving its build type.");
+  const path = `/api/dev/apps/${appId}/testflight/macos`;
+  const selected = type.value;
+  const expected = selected === "native" ? "MAC_APP_STORE" : "MAC_CATALYST_APP_STORE";
+  const current = await api<TestflightStatus>("GET", path);
+  if (!current.setUp) throw new Error("Use Set up Mac TestFlight before saving its build type.");
+  if (current.profileType !== expected || !current.profile) {
+    const saved = await api<TestflightStatus>("POST", path, { nativeMac: selected === "native", repair: true });
+    if (saved.needs) throw new Error("Complete the required Apple setup before saving the Mac build type.");
+    const confirmed = await api<TestflightStatus>("GET", path);
+    if (!confirmed.setUp || confirmed.profileType !== expected || !confirmed.profile) {
+      throw new Error("The saved Mac build type could not be confirmed. Your selection is retained; try saving again.");
+    }
+  }
+  type.dataset.savedType = selected;
+}
+
 export function platformTestflightCard(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
   const name = platform === "macos" ? "Mac" : "Apple TV";
   return html`<div class="card mt"><h2>${name} TestFlight</h2><p class="small muted">${platform === "macos" ? "Uses the selected Mac build type and its installer signing profile." : "Uses the Apple TV build and its testing group."}</p>
     <div data-platform-delivery>${platformDeliveryStatus(app, platform, t)}</div>
     ${t.buildRequest?.error ? callout("bad", html`<p>Build request failed: ${t.buildRequest.error}</p>`) : ""}
-    ${platform === "macos" ? html`<div class="field mt-s"><label for="mac-build-type">Mac build type</label><select id="mac-build-type" data-mac-build-type><option value="catalyst" ${t.profileType !== "MAC_APP_STORE" ? "selected" : ""}>Mac Catalyst: iPhone/iPad app built for Mac</option><option value="native" ${t.profileType === "MAC_APP_STORE" ? "selected" : ""}>Native macOS app target</option></select><div class="hint">Choose the type built by the app's Xcode target. Both run as Mac applications; they need different distribution profiles.</div>${t.setUp ? html`<p class="small">Configured signing: <b>${t.profileType === "MAC_APP_STORE" ? "Native macOS" : "Mac Catalyst"}</b>.</p><button type="button" class="btn sm secondary" data-platform-type>Apply build type and set up profile</button>` : ""}</div>` : ""}
+    ${platform === "macos" ? html`<div class="field mt-s"><label for="mac-build-type">Mac build type</label><select id="mac-build-type" data-mac-build-type data-saved-type="${t.profileType === "MAC_APP_STORE" ? "native" : "catalyst"}"><option value="catalyst" ${t.profileType !== "MAC_APP_STORE" ? "selected" : ""}>Mac Catalyst: iPhone/iPad app built for Mac</option><option value="native" ${t.profileType === "MAC_APP_STORE" ? "selected" : ""}>Native macOS app target</option></select><div class="hint">Choose the type built by the app's Xcode target. Both run as Mac applications; they need different distribution profiles. For a configured app, Save changes also saves this choice.</div>${t.setUp ? html`<p class="small">Configured signing: <b>${t.profileType === "MAC_APP_STORE" ? "Native macOS" : "Mac Catalyst"}</b>.</p><button type="button" class="btn sm secondary" data-platform-type>Save Mac build type</button>` : ""}</div>` : ""}
     <button type="button" class="btn sm" data-platform-setup>${t.setUp ? "Check with Apple" : `Set up ${name} TestFlight`}</button>
     ${t.setUp ? html`<button type="button" class="btn sm secondary" data-platform-build>Ask for ${name} build</button><button type="button" class="btn sm ghost" data-platform-repair>Set up again</button>` : ""}
     ${t.stage === "open" && t.invitation.state === "open" && t.url ? html`<p class="small"><a href="${t.url}">Open ${name} invitation</a></p>` : html`<p class="small muted">${name} invitation unavailable.</p>`}
@@ -769,17 +799,36 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
     box.innerHTML = platformTestflightCard(app, platform, t).html;
     const typeChoice = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
     if (typeChoice && selectedType) typeChoice.value = selectedType;
-    const act = async (button: HTMLButtonElement, suffix = "", repair = false) => {
-      if (!targetEnabled(root, platform)) return;
+    const act = async (button: HTMLButtonElement, suffix = "", repair = false, saveType = false) => {
+      if (!targetEnabled(root, platform) || root.dataset.appSaving) return;
+      const save = root.querySelector<HTMLButtonElement>('#app-form button[type="submit"]');
+      const choice = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
+      if (platform === "macos") {
+        root.dataset.appSaving = "true";
+        if (save) save.disabled = true;
+        if (choice) choice.disabled = true;
+      }
       box.querySelectorAll<HTMLButtonElement>("button").forEach(b => b.disabled = true);
       button.textContent = "Checking...";
       try {
-        const type = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
-        const body = suffix ? undefined : { ...(type && (!t.setUp || repair) ? { nativeMac: type.value === "native" } : {}), ...(repair ? { repair: true } : {}) };
-        render(await api<TestflightStatus>("POST", path + suffix, body));
+        if (saveType) {
+          await saveMacBuildType(root, app.id);
+          render(await api<TestflightStatus>("GET", path));
+        } else {
+          const type = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
+          const body = suffix ? undefined : { ...(type && (!t.setUp || repair) ? { nativeMac: type.value === "native" } : {}), ...(repair ? { repair: true } : {}) };
+          const next = await api<TestflightStatus>("POST", path + suffix, body);
+          render(platform === "macos" && !next.needs ? await api<TestflightStatus>("GET", path) : next);
+        }
       } catch (err) {
         render(t);
         box.querySelector<HTMLElement>("[data-platform-error]")!.innerHTML = errorBox(err).html;
+      } finally {
+        if (platform === "macos") {
+          delete root.dataset.appSaving;
+          if (save) save.disabled = false;
+          box.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select").forEach(control => control.disabled = false);
+        }
       }
     };
     const setup = box.querySelector<HTMLButtonElement>("[data-platform-setup]")!;
@@ -789,7 +838,8 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
     const repair = box.querySelector<HTMLButtonElement>("[data-platform-repair]");
     if (repair) repair.onclick = () => void act(repair, "", true);
     const type = box.querySelector<HTMLButtonElement>("[data-platform-type]");
-    if (type) type.onclick = () => void act(type, "", true);
+    if (type) type.onclick = () => void act(type, "", false, true);
+    if (root.dataset.appSaving) box.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select").forEach(control => control.disabled = true);
   };
   try {
     render(await api<TestflightStatus>("GET", path));

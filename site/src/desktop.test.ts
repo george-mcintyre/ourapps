@@ -102,7 +102,7 @@ describe("desktop install choices", () => {
     expect(page).not.toContain('href="https://testflight.apple.com/join/closed"');
     const configured = platformTestflightCard({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", { ...status, setUp: true, needs: null, profileType: "MAC_APP_STORE" }).html;
     expect(configured).toContain('value="native" selected');
-    expect(configured).toContain("Apply build type and set up profile");
+    expect(configured).toContain("Save Mac build type");
     expect(configured).toContain("Configured signing");
     const waiting = platformDeliveryStatus({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", { ...status, setUp: true, needs: null, stage: "waiting-for-upload" }).html;
     expect(waiting).toContain("Awaiting Mac upload");
