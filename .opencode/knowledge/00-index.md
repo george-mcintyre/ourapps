@@ -32,6 +32,8 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- Read-only Apple distribution diagnosis: `buildDistributionStatus` in `worker/src/routes/build.ts`, GET `/api/build/:app/:platform/testflight/distribution` with the app build token. Reads actual group membership, tester count and notification settings without identities/secrets or local/Apple writes; incomplete evidence is null. `worker/test/distribution-status.test.ts` covers ownership, disabled reads and no-rewrite guarantees.
+
 - Mac build-type saves: `site/src/pages/dev.ts` shares `saveMacBuildType` between Save changes and Save Mac build type; configured changes use owner-authorized profile repair and confirm persisted status before completion. `site/src/macBuildType.test.ts` covers unchanged, disabled, incomplete and retry cases. General app writes do not store `nativeMac`.
 
 - Target selection: `shared/src/targets.ts` defines `ios`, `android`, `web`, `macos`, `windows`, `tvos`; `web` maps to manifest `install.pwa`. Migration `worker/migrations/0018_target_selection.sql` adds six checked, default-enabled flags; `worker/src/db.ts` reads them and updates one flag. `site/src/targets.ts` renders switches, retains disabled section content and restores saved state after errors.

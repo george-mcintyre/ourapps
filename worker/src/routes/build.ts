@@ -31,6 +31,35 @@ async function requireBuildToken(request: Request, env: Env, app: AppRow, rehash
   if (match.rewrite && rehash) await Db.from(env).rehashBuildToken(app.id, await tokenHash(masterKeys(env), "build-token", given));
 }
 
+export async function buildDistributionStatus(request: Request, env: Env, deps: Deps, appId: string, platformName: string): Promise<Response> {
+  const db = Db.from(env);
+  const base = await db.appById(appId);
+  if (!base) throw new HttpError(404, "unknown app");
+  await requireBuildToken(request, env, base, false);
+  const platform = applePlatform(platformName);
+  const app = await db.platformApp(base, platform);
+  if (!app.ascAppId || !app.betaGroupId) throw new HttpError(409, "TestFlight is not set up for this platform.");
+  try {
+    const secrets = await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"], false);
+    const apple = appleClient(env, deps, secrets);
+    const group = await apple.betaGroupDistribution(app.betaGroupId);
+    const builds = [];
+    for (const row of await db.testflightBuilds(app.id, 6, platform)) {
+      if (!row.buildId) continue;
+      const detail = await apple.betaDetail(row.buildId);
+      builds.push({ version: row.version, buildNumber: row.buildNumber, buildId: row.buildId, recordedState: row.state,
+        externalBuildState: detail.externalBuildState, autoNotifyEnabled: detail.autoNotifyEnabled,
+        inConfiguredGroup: await apple.buildInBetaGroup(row.buildId, app.betaGroupId), notifiedAt: row.notifiedAt ?? null });
+    }
+    return json({ platform, checkedAt: deps.now().toISOString(), group: { id: app.betaGroupId,
+      isInternalGroup: group.isInternalGroup, publicLinkEnabled: group.publicLinkEnabled,
+      publicLinkMatchesConfigured: group.publicLink && app.testflightUrl ? group.publicLink === app.testflightUrl : null,
+      recordedInvitationState: app.testflightLinkState ?? null, testerCount: group.testerCount }, builds });
+  } catch (error) {
+    return json({ error: "Apple distribution lookup failed", appleStatus: error instanceof AppleError ? error.status : null }, 502);
+  }
+}
+
 export async function buildUploadFileStatus(request: Request, env: Env, deps: Deps, appId: string, platformName: string, fileId: string): Promise<Response> {
   const db = Db.from(env);
   const app = await db.appById(appId);

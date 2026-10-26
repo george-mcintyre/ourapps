@@ -192,6 +192,8 @@ async function keyedChecks() {
     const targetList = await call("GET", "/api/dev/apps");
     expectStatus("list the throwaway app's targets", targetList, 200);
     await targetChecks(id, buildToken, app, got.json?.app, targetList.json?.apps?.find((item) => item.id === id));
+    const distribution = await call("GET", `/api/build/${id}/tvos/testflight/distribution`, { auth: buildToken, pattern: "/api/build/:app/:platform/testflight/distribution" });
+    expectStatus("distribution status requires configured platform setup", distribution, 409);
 
     const bad = await call("PUT", P("/api/dev/apps/:id"), { body: { bundleId: "not a bundle id" }, pattern: "/api/dev/apps/:id" });
     expectStatus("a malformed bundle ID is refused", bad, 400);
