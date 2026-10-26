@@ -112,4 +112,23 @@ describe("desktop install choices", () => {
     expect(processing).toContain("Apple is processing the Mac upload");
     expect(processing).not.toContain("No Mac upload has arrived");
   });
+
+  it("distinguishes an open group from confirmed approved-build availability", () => {
+    const status: TestflightStatus = { setUp: true, needs: null, storeApp: null, stage: "approved", url: "https://testflight.apple.com/join/example", invitation: { state: "open", checkedAt: null }, buildRequest: null, profile: "profile", contact: true, builds: [] };
+    const page = platformTestflightCard({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], "macos", status).html;
+    expect(page).toContain("Approved, awaiting testing availability");
+    expect(page).toContain("invitation is open");
+    expect(page).toContain("Group assignment and distribution still need checking");
+    expect(page).toContain("No new upload is needed");
+    expect(page).not.toContain("its invitation is not open yet");
+    expect(page).not.toContain("Mac invitation unavailable.");
+    expect(page).not.toContain('href="https://testflight.apple.com/join/example"');
+  });
+
+  it("gives a link-settings action when an approved group's invitation is closed", () => {
+    const status: TestflightStatus = { setUp: true, needs: null, storeApp: null, stage: "approved", url: null, invitation: { state: "not-accepting", checkedAt: null }, buildRequest: null, profile: "profile", contact: true, builds: [] };
+    const page = platformDeliveryStatus({ bundleId: "a.b" } as Parameters<typeof platformDeliveryStatus>[0], "tvos", status).html;
+    expect(page).toContain("public invitation is not accepting testers");
+    expect(page).toContain("Check the testing group&#39;s public link settings");
+  });
 });
