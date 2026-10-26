@@ -42,19 +42,29 @@ export async function buildDistributionStatus(request: Request, env: Env, deps: 
   try {
     const secrets = await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"], false);
     const apple = appleClient(env, deps, secrets);
-    const group = await apple.betaGroupDistribution(app.betaGroupId);
+    const errors: { operation: "group" | "tester-count" | "build-detail" | "build-groups"; buildId: string | null; appleStatus: number | null }[] = [];
+    const read = async <T>(operation: typeof errors[number]["operation"], buildId: string | null, action: () => Promise<T>): Promise<T | null> => {
+      try { return await action(); }
+      catch (error) {
+        errors.push({ operation, buildId, appleStatus: error instanceof AppleError ? error.status : null });
+        return null;
+      }
+    };
+    const group = await read("group", null, () => apple.betaGroupDistribution(app.betaGroupId!));
+    const testerCount = await read("tester-count", null, () => apple.betaGroupTesterCount(app.betaGroupId!));
     const builds = [];
     for (const row of await db.testflightBuilds(app.id, 6, platform)) {
       if (!row.buildId) continue;
-      const detail = await apple.betaDetail(row.buildId);
+      const detail = await read("build-detail", row.buildId, () => apple.betaDetail(row.buildId!));
+      const membership = await read("build-groups", row.buildId, () => apple.buildInBetaGroup(row.buildId!, app.betaGroupId!));
       builds.push({ version: row.version, buildNumber: row.buildNumber, buildId: row.buildId, recordedState: row.state,
-        externalBuildState: detail.externalBuildState, autoNotifyEnabled: detail.autoNotifyEnabled,
-        inConfiguredGroup: await apple.buildInBetaGroup(row.buildId, app.betaGroupId), notifiedAt: row.notifiedAt ?? null });
+        externalBuildState: detail?.externalBuildState ?? null, autoNotifyEnabled: detail?.autoNotifyEnabled ?? null,
+        inConfiguredGroup: membership, notifiedAt: row.notifiedAt ?? null });
     }
-    return json({ platform, checkedAt: deps.now().toISOString(), group: { id: app.betaGroupId,
-      isInternalGroup: group.isInternalGroup, publicLinkEnabled: group.publicLinkEnabled,
-      publicLinkMatchesConfigured: group.publicLink && app.testflightUrl ? group.publicLink === app.testflightUrl : null,
-      recordedInvitationState: app.testflightLinkState ?? null, testerCount: group.testerCount }, builds });
+    return json({ platform, status: errors.length ? "partial" : "complete", checkedAt: deps.now().toISOString(), group: { id: app.betaGroupId,
+      isInternalGroup: group?.isInternalGroup ?? null, publicLinkEnabled: group?.publicLinkEnabled ?? null,
+      publicLinkMatchesConfigured: group?.publicLink && app.testflightUrl ? group.publicLink === app.testflightUrl : null,
+      recordedInvitationState: app.testflightLinkState ?? null, testerCount }, builds, errors });
   } catch (error) {
     return json({ error: "Apple distribution lookup failed", appleStatus: error instanceof AppleError ? error.status : null }, 502);
   }
