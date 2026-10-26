@@ -1,0 +1,6 @@
+ALTER TABLE apps ADD COLUMN target_ios INTEGER NOT NULL DEFAULT 1 CHECK (target_ios IN (0, 1));
+ALTER TABLE apps ADD COLUMN target_android INTEGER NOT NULL DEFAULT 1 CHECK (target_android IN (0, 1));
+ALTER TABLE apps ADD COLUMN target_web INTEGER NOT NULL DEFAULT 1 CHECK (target_web IN (0, 1));
+ALTER TABLE apps ADD COLUMN target_macos INTEGER NOT NULL DEFAULT 1 CHECK (target_macos IN (0, 1));
+ALTER TABLE apps ADD COLUMN target_windows INTEGER NOT NULL DEFAULT 1 CHECK (target_windows IN (0, 1));
+ALTER TABLE apps ADD COLUMN target_tvos INTEGER NOT NULL DEFAULT 1 CHECK (target_tvos IN (0, 1));

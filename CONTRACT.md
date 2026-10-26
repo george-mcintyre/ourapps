@@ -6,6 +6,25 @@ Served at https://ourapps.app/contract.md; the API reference for agents is at
 https://ourapps.app/agents.md. The store dashboard at /dev/agents carries a prompt that sets a
 repository up to this contract.
 
+## Target selection
+
+Each app has six independent switches: `ios` (iPhone and iPad together), `android`, `web` (`install.pwa`), `macos` (packages and TestFlight), `windows` and `tvos`. Existing and new apps default to all enabled when preferences are read successfully. A failed read must stop target work. Enabled does not imply declared, configured or ready to install.
+
+Before target work in every release, manual, repository-event or Apple platform job, read current preferences with the app's existing build token:
+
+```http
+GET /api/build/:app/targets
+Authorization: Bearer <STORE_BUILD_TOKEN>
+```
+
+The response is `200` with `Cache-Control: no-store` and exactly `{ "targets": { "ios": true, "android": true, "web": true, "macos": true, "windows": true, "tvos": true } }`. `:app` is `STORE_APP_ID`. Missing, invalid, cross-app or rotated tokens return 401. Read again inside a queued job before target work; do not reuse a dispatch-time snapshot. Validate all six booleans, skip disabled targets and stop affected work on malformed, unauthorized or failed reads. Tests-only jobs can run independently. Partial releases preserve disabled targets' artifacts and manifest declarations.
+
+The owner saves one switch with `PUT /api/dev/apps/:id/targets/:target`, using a signed-in browser or a developer key with `manage` scope. The body is exactly `{ "enabled": false }` or `{ "enabled": true }`; extra fields, other shapes and unknown targets are rejected. It returns the same six-boolean `targets` response, no-store. Read-only developer keys and app build tokens cannot save switches.
+
+Disabled targets are omitted from share pages, preview and update metadata. The iPhone/iPad compatibility invitation on Mac requires both `ios` and `macos` enabled. With all targets disabled, the listing and screenshots remain, with no install options. Setup, credentials, source manifests, artifacts and history are retained. Authenticated new setup, repair, build requests, signing GET/HEAD (including iPhone aliases), build-number reservations, new uploads, upload-operation retrieval and commit return 409 with exactly `{ "error": "Target is disabled." }`, no-store. Status/history reads and processing/review of already uploaded builds continue.
+
+Saving or re-enabling a switch dispatches no build or setup. Re-enabling restores currently available retained options; normal scheduled expiry renewal resumes while enabled. Selection does not revoke issued signing material, upload operations or download links, close Apple invitations, remove hosted addresses, or cancel external requests already in flight.
+
 ## 1. Publish a release with `my-app.json`
 
 ### Desktop package specification
@@ -55,7 +74,7 @@ Existing build addresses are iOS-only aliases. Unknown platforms fail explicitly
 
 For a manually started Mac/TV workflow without a reserved build input, POST `reserve-build` exactly once inside the executing job with the app's bearer build token and no body. Its no-store response is `{ "version": "0.5.0", "buildNumber": "8" }`, both strings. The service resolves the validated manifest version and atomically reserves above verified Apple/local build numbers; it dispatches no workflow and exposes no signing material. Use both returned values for archive, export and upload. A dashboard-dispatched workflow already has reserved version/build inputs and must skip this endpoint. Do not run both paths for the same execution. iOS reservation is unsupported; missing platform setup returns 409, invalid token 401, incomplete reconciliation 502. Reservations are consumed even if the later export/upload fails.
 
-To link an automatically reserved pair to its workflow, optionally send `{ "runId": "<GITHUB_RUN_ID>", "runAttempt": "<GITHUB_RUN_ATTEMPT>" }`. Both fields must be supplied together as positive decimal strings or safe positive integers. The service verifies repository, workflow file, run, attempt and platform title before recording the association. Revalidated retries of the same attempt reuse its pair; a different attempt reserves separately. Bodyless clients remain supported. Upload evidence requires the reserved platform/version/build and receipt time to match; without an identified pair, receipt is unconfirmed rather than absent. Send a descriptive application User-Agent on HTTP clients, such as `McInPoker-Build/1.0`.
+To link an automatically reserved pair to its workflow, optionally send `{ "runId": "<GITHUB_RUN_ID>", "runAttempt": "<GITHUB_RUN_ATTEMPT>" }`. Both fields must be supplied together as positive decimal strings or safe positive integers. The service verifies repository, workflow file, run, attempt and platform title before recording the association. Revalidated retries of the same attempt reuse its pair; a different attempt reserves separately. Bodyless clients remain supported. Upload evidence requires the reserved platform/version/build and receipt time to match; without an identified pair, receipt is unconfirmed rather than absent. Send a descriptive application User-Agent on HTTP clients, such as `PokerNight-Build/1.0`.
 
 For read-only diagnosis of an existing upload, GET `upload/:file/status` with the same app build token. The file must belong to that app and platform. This reads Apple's existing upload file only: no reservation, upload, commit, token rewrite or credential rewrap. The no-store response contains `platform`, `version`, `buildNumber`, `uploadFileId`, `recordedState` and `appleFile`. The latter includes `assetDeliveryState`, optional `uploaded`, `fileSize`, `fileSizeType`, `operationCount`, `operationsTruncated`, bounded `operations` and `coverage`. Each operation exposes only method, offset/length and their types, HTTPS flag, hostname and header names; never addresses, header values or signing material. Coverage reports expected file size, numeric validity, sorted/original-order continuity, overlap, covered bytes and completeness. Unknown values are null. Apple lookup failure returns 502 with `{ "error": "Apple upload-file lookup failed", "appleStatus": 403 }` (status null when unavailable).
 

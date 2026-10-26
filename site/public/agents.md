@@ -116,11 +116,33 @@ POST /api/dev/apps/:id/testflight/:platform/build -> TestFlight (asks for that p
 PUT  /api/dev/review-contact        body: { "firstName", "lastName", "email", "phone" }  (who Apple's beta review contacts)
 ```
 
-TestFlight: `{ "platform", "profileType", "setUp", "needs", "storeApp", "stage", "url", "invitation": { "state", "checkedAt" }, "buildRequest": { "at", "error" } | null, "profile", "contact", "builds": [ { "version", "buildNumber", "state", "appleState", "message", "uploadedAt", "submittedAt", "expiresAt", "updatedAt" } ] }`. `needs` is `bundle-id`, `apple-key`, `signing`, `review-contact`, `store-app` or null. With `setUp` false and `needs` null, POST to check with Apple. For Mac and Apple TV, add the platform to the existing App Store Connect record; the default bundle identifier is the registered app's `bundleId`. Mac setup provisions the installer signing key on the server. `stage` is `no-build`, `waiting-for-upload`, `processing`, `in-review`, `approved`, `link-closed`, `rejected`, `failed` or `open`. `invitation.state` is `open`, `not-accepting`, `full`, `missing` or null. Only a matching ready platform build and open invitation expose an install link. Mac setup needs a signed-in browser. Body `{ "repair": true }` repeats setup; changing Mac profile type after setup also requires repair.
+TestFlight: `{ "platform", "profileType", "setUp", "needs", "storeApp", "stage", "url", "invitation": { "state", "checkedAt" }, "buildRequest": { "at", "error" } | null, "profile", "contact", "builds": [ { "version", "buildNumber", "state", "appleState", "message", "uploadedAt", "submittedAt", "expiresAt", "updatedAt" } ] }`. `needs` is `bundle-id`, `apple-key`, `signing`, `review-contact`, `store-app` or null. With the target enabled, `setUp` false and `needs` null, POST to check with Apple. For Mac and Apple TV, add the platform to the existing App Store Connect record; the default bundle identifier is the registered app's `bundleId`. Mac setup provisions the installer signing key on the server. `stage` is `no-build`, `waiting-for-upload`, `processing`, `in-review`, `approved`, `link-closed`, `rejected`, `failed` or `open`. `invitation.state` is `open`, `not-accepting`, `full`, `missing` or null. Only a matching ready platform build and open invitation expose an install link. Mac setup needs a signed-in browser. Body `{ "repair": true }` repeats setup; changing Mac profile type after setup also requires repair.
 
 Field rules: `name` required; `repo` must be `owner/name`; `bundleId` is the Apple bundle identifier (`com.yourname.app`) and the default for each Apple platform's setup; `iconUrl`, `manifestUrl` and every screenshot must be https URLs; at most 10 screenshots per list; `screenshotsByPlatform` keys are `iphone`, `ipad`, `android`, `web`, `macos`, `windows`, `tvos` (empty lists are dropped); `showOnPage` lists the app, details only, on the developer's public page.
 
-App object: `{ id, developerId, name, tagline, description, whatsNew, size, minOs, ageNote, privacySummary, iconUrl, screenshots, screenshotsByPlatform, repo, manifestUrl, bundleId, ascAppId, testflightUrl, showOnPage, createdAt, updatedAt }`.
+App object: `{ id, developerId, name, tagline, description, whatsNew, size, minOs, ageNote, privacySummary, iconUrl, screenshots, screenshotsByPlatform, repo, manifestUrl, bundleId, ascAppId, testflightUrl, showOnPage, targets, createdAt, updatedAt }`.
+
+## Target selection
+
+`App.targets` contains six booleans: `ios` covers iPhone and iPad together, `android`, `web` maps to `install.pwa`, `macos` covers packages and TestFlight, `windows`, and `tvos` covers Apple TV. Successfully read existing and new app preferences default to enabled; failed reads stop target work. Enabled does not mean declared, configured or ready.
+
+```http
+PUT /api/dev/apps/:id/targets/:target
+body: { "enabled": false }
+-> { "targets": { "ios": true, "android": true, "web": true, "macos": true, "windows": true, "tvos": false } }
+
+GET /api/build/:app/targets
+Authorization: Bearer <STORE_BUILD_TOKEN>
+-> { "targets": { "ios": true, "android": true, "web": true, "macos": true, "windows": true, "tvos": false } }
+```
+
+Both responses use `Cache-Control: no-store`. The write requires ownership and a browser session or `manage` developer key; `read` keys receive 403. Browser writes retain the session origin and accepted-terms checks. Accept exactly one `enabled` boolean, with no extra fields; malformed bodies and unknown targets return 400. App build tokens cannot write preferences. The read accepts only that app's existing build token; absent, invalid, cross-app and rotated tokens receive 401. Reads do not rotate tokens or change credentials.
+
+On the app page, use the switch beside each target heading. Disabled sections keep their setup, release information and history, greyed but readable. Disabled delivery options disappear from share pages, preview and update metadata; iPhone/iPad compatibility on Mac needs both `ios` and `macos`. All disabled leaves the listing and screenshots with no install options. The private release-status endpoint retains the published target information.
+
+Authenticated new setup, repair, build requests, signing GET/HEAD including iPhone aliases, build-number reservation, new upload, upload-operation retrieval and commit return 409 with exactly `{ "error": "Target is disabled." }`, no-store. Status/history reads and processing/review of already uploaded builds continue. Setup, credentials, source manifests and artifacts are retained. Saving or re-enabling dispatches no build or setup; re-enabling restores currently available options and normal scheduled expiry renewal resumes while enabled.
+
+Issued signing material, upload operations and download links remain usable, as do existing Apple invitations and hosted addresses. Selection does not revoke access or cancel external requests already in flight. Repository workflows read current flags inside every target job, skip disabled work, stop on failed or malformed reads, and preserve disabled artifacts/declarations during partial releases. See contract.md for the workflow contract.
 
 After creating an app, store the token and id in the repository at once, passing the values on standard input so they never appear on a command line:
 
@@ -196,7 +218,7 @@ Give the developer the `url`; one link per person or group is the convention so 
 
 ## Limits worth telling the developer
 
-- Apple: TestFlight takes up to 10,000 people per app through the public link; each build lasts 90 days (ourapps sends `my-store-release` two weeks before expiry); Apple's beta review checks the first build of each version. Universal iPhone and iPad apps need no extra fields; build one .ipa with TARGETED_DEVICE_FAMILY 1,2.
+- Apple: TestFlight takes up to 10,000 people per app through the public link; each build lasts 90 days (while enabled, ourapps sends `my-store-release` two weeks before expiry); Apple's beta review checks the first build of each version. Universal iPhone and iPad apps need no extra fields; build one .ipa with TARGETED_DEVICE_FAMILY 1,2.
 - Android and web: no device limit.
 - Android does not auto-update; friends tap Update. TestFlight updates iPhone apps. Version numbers must increase and the Android signing key must stay the same.
 

@@ -206,8 +206,9 @@ export async function loadBuildStatus(env: Env, deps: Deps, app: AppRow, token: 
   return status;
 }
 
-export async function dispatchEvent(env: Env, deps: Deps, token: string | undefined, repo: string, event: string, payload: Record<string, unknown>): Promise<void> {
+export async function dispatchEvent(env: Env, deps: Deps, token: string | undefined, repo: string, event: string, payload: Record<string, unknown>, check?: () => Promise<void>): Promise<void> {
   if (!token) throw new Error("no GitHub token saved in account settings");
+  await check?.();
   const res = await deps.fetch(`${env.GITHUB_API_BASE}/repos/${repo}/dispatches`, {
     method: "POST",
     redirect: "manual",
@@ -299,7 +300,7 @@ export async function fetchBuildManifest(fetcher: typeof fetch, source: string, 
   }
 }
 
-export async function dispatchAppleWorkflow(env: Env, deps: Deps, token: string | undefined, repo: string, platform: "macos" | "tvos", version: string, buildNumber: number): Promise<void> {
+export async function dispatchAppleWorkflow(env: Env, deps: Deps, token: string | undefined, repo: string, platform: "macos" | "tvos", version: string, buildNumber: number, check?: () => Promise<void>): Promise<void> {
   const name = platform === "macos" ? "Mac" : "Apple TV";
   if (!token) throw new GithubBuildRequestError(`Save a GitHub token with repository access, Contents: read and Actions: write in account settings to request a ${name} build.`);
   const controller = new AbortController();
@@ -325,6 +326,7 @@ export async function dispatchAppleWorkflow(env: Env, deps: Deps, token: string 
     const workflow = await (await send(workflowPath)).json() as { state?: string };
     if (workflow.state !== "active") throw new GithubBuildRequestError(`Enable .github/workflows/apple-testflight.yml on the repository's default branch before requesting a ${name} build.`);
     if (!Number.isSafeInteger(buildNumber) || buildNumber < 1) throw new GithubBuildRequestError("A safe numeric Apple build number was not reserved; the workflow was not requested.");
+    await check?.();
     const response = await send(`${workflowPath}/dispatches`, { ref: metadata.default_branch, inputs: { platform, version, build: String(buildNumber), upload: "true" } });
     if (response.status !== 204) throw new GithubBuildRequestError(`GitHub did not confirm the ${name} workflow dispatch; check apple-testflight.yml and Actions: write in account settings.`);
   };
@@ -333,7 +335,7 @@ export async function dispatchAppleWorkflow(env: Env, deps: Deps, token: string 
       timer = setTimeout(() => { controller.abort(); reject(new GithubBuildRequestError(`The ${name} workflow request timed out. Check GitHub Actions before retrying; dispatch may have been received.`)); }, 8000);
     })]);
   } catch (error) {
-    if (error instanceof GithubBuildRequestError) throw error;
+    if (error instanceof GithubBuildRequestError || error instanceof HttpError) throw error;
     throw new GithubBuildRequestError(`GitHub could not request the ${name} workflow. Check repository access and Actions: write in account settings, then retry.`);
   } finally { if (timer !== undefined) clearTimeout(timer); }
 }

@@ -1,5 +1,5 @@
 // Developer dashboard routes: a browser session or an API key; requireSession marks the browser-only ones.
-import { SCREENSHOT_PLATFORMS, TERMS_VERSION, type ScreenshotPlatform } from "@my/store-shared";
+import { SCREENSHOT_PLATFORMS, TERMS_VERSION, defaultAppTargets, isAppTarget, type ScreenshotPlatform } from "@my/store-shared";
 import { audit } from "../audit.js";
 import { RESERVED_SLUGS, apiKeyHash, clearSessionCookie, masterKeys, newApiKey, normaliseSlug, requireSession, type AuthedDeveloper } from "../auth.js";
 import { randomId, tokenHash, validateAppleKey, validateSigningKey } from "../crypto.js";
@@ -15,6 +15,7 @@ import { webHosting } from "../webapp.js";
 import { localNeed, refreshTestflight, renewStoreProfile, requestBuild, reviewContact, setUpTestflight, storeAppForm, testflightStage, type TestflightNeed } from "../testflight.js";
 import { applePlatform, profileType } from "../apple-platform.js";
 import { buildLinkPage } from "./public.js";
+import { requireTarget, TargetDisabledError } from "../targets.js";
 
 type AppInput = Partial<Record<"name" | "tagline" | "description" | "whatsNew" | "size" | "minOs" | "ageNote" | "privacySummary" | "iconUrl" | "repo" | "manifestUrl" | "bundleId", string>> & {
   screenshots?: unknown;
@@ -43,7 +44,7 @@ function publicApp(app: AppRow) {
     iosOnMacCheckedAt: _iosOnMacCheckedAt,
     ...rest
   } = app;
-  return rest;
+  return { ...rest, targets: app.targets ?? defaultAppTargets() };
 }
 
 function applyInput(app: AppRow, body: AppInput): void {
@@ -233,6 +234,7 @@ export async function setUpSigning(request: Request, env: Env, deps: Deps, dev: 
       await renewStoreProfile(env, apple, app, issued.id);
       apps.push({ id: app.id, name: app.name, error: null });
     } catch (err) {
+      if (err instanceof TargetDisabledError) continue;
       apps.push({ id: app.id, name: app.name, error: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -298,6 +300,15 @@ export async function getApp(env: Env, dev: Developer, id: string): Promise<Resp
   const db = Db.from(env);
   const app = await ownedApp(db, dev, id);
   return json({ app: publicApp(app), links: await db.linksByApp(app.id) });
+}
+
+export async function setTarget(request: Request, env: Env, dev: Developer, id: string, target: string): Promise<Response> {
+  const db = Db.from(env);
+  await ownedApp(db, dev, id);
+  if (!isAppTarget(target)) throw new HttpError(400, "Unknown target.");
+  const body = await readJson<unknown>(request);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1 || !("enabled" in body) || typeof body.enabled !== "boolean") throw new HttpError(400, "Body must contain exactly enabled as a boolean.");
+  return json({ targets: await db.setAppTarget(id, target, body.enabled) });
 }
 
 // PUT /api/dev/apps/:id
@@ -419,6 +430,7 @@ export async function setUpAppTestflight(request: Request, env: Env, deps: Deps,
   const platform = applePlatform(platformName);
   if (platform === "macos") requireSession(dev as AuthedDeveloper);
   const app = await db.platformApp(await ownedApp(db, dev, id), platform);
+  await requireTarget(env, app);
   const body = await optionalJson<{ repair?: unknown; nativeMac?: unknown }>(request);
   if (body.nativeMac !== undefined && (platform !== "macos" || typeof body.nativeMac !== "boolean")) throw new HttpError(400, "nativeMac must be a boolean for macos setup");
   if (body.nativeMac !== undefined && app.ascAppId && body.nativeMac !== app.nativeMac && body.repair !== true) throw new HttpError(409, "changing Mac profile type requires repair: true");
@@ -443,6 +455,7 @@ export async function setUpAppTestflight(request: Request, env: Env, deps: Deps,
 export async function requestAppBuild(env: Env, deps: Deps, dev: Developer, id: string, platformName = "ios"): Promise<Response> {
   const db = Db.from(env);
   const app = await db.platformApp(await ownedApp(db, dev, id), applePlatform(platformName));
+  await requireTarget(env, app);
   if (!app.ascAppId) throw new HttpError(409, "set up TestFlight for this app first");
   await requestBuild(env, deps, app, "requested");
   return json(await testflightView(env, deps, db, app, dev, null));

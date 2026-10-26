@@ -178,12 +178,7 @@ export async function installPage(root: HTMLElement, linkId: string): Promise<vo
     checkedAt = Date.now();
     try {
       const next = await api<LinkPage>("GET", `/api/public/links/${encodeURIComponent(linkId)}`);
-      const changed = next.release?.version !== data.release?.version
-        || next.release?.testflightVersion !== data.release?.testflightVersion
-        || next.release?.install.ios?.testflight !== data.release?.install.ios?.testflight
-        || JSON.stringify(next.release?.apple) !== JSON.stringify(data.release?.apple)
-        || next.release?.install.macos?.packages.length !== data.release?.install.macos?.packages.length
-        || next.release?.install.windows?.packages.length !== data.release?.install.windows?.packages.length;
+      const changed = deliveryChanged(data, next);
       if (changed && marker.isConnected) {
         stop();
         const y = scrollY;
@@ -228,6 +223,21 @@ interface InstallOpts {
   example?: boolean;
 }
 
+export function deliveryChanged(previous: LinkPage, next: LinkPage): boolean {
+  if (previous.release?.version !== next.release?.version) return true;
+  if (previous.deliveryRevision !== undefined || next.deliveryRevision !== undefined) return previous.deliveryRevision !== next.deliveryRevision;
+  return JSON.stringify([previous.release?.version, previous.release?.install, previous.release?.apple]) !== JSON.stringify([next.release?.version, next.release?.install, next.release?.apple]);
+}
+
+export function hasDelivery(data: LinkPage): boolean {
+  const install = data.release?.install;
+  return Boolean(install && (install.ios || install.android || install.pwa || install.macos || install.windows || install.tvos));
+}
+
+export function noDelivery(): Raw {
+  return html`<div class="install-card"><h3>No install options available</h3><p class="muted">The developer has not enabled any delivery options for this release. App details and previews are available below.</p></div>`;
+}
+
 export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOpts): void {
   const d = detect();
   const app = data.app;
@@ -241,7 +251,7 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
   const tabbed = showTabs(d.platform, views);
   // Computers show selectable versions; phones show their matching version.
   const shown: (ViewKind | null)[] = tabbed ? views : [current];
-  const blocked = Boolean(d.inApp && !d.inApp.installWorks) || !data.release;
+  const blocked = Boolean(d.inApp && !d.inApp.installWorks) || !data.release || !hasDelivery(data);
   const history = data.history ?? [];
   // The latest release's notes are the truth; the dashboard field only fills in when there are none.
   // iPhone and iPad get what TestFlight has, which can be older than the latest release.
@@ -464,6 +474,7 @@ function compat(data: LinkPage): string {
 // The pill button next to the icon; the detailed flow lives in installArea.
 function ctaArea(data: LinkPage, d: Detected, name: string): Raw {
   if (!data.release) return html`<span class="pill warn">${icon("info", "icon-16")} No build published yet</span>`;
+  if (!hasDelivery(data)) return html`<span class="pill">No install options available</span>`;
   const install = data.release.install;
   if (d.inApp && !d.inApp.installWorks) return html`<button class="btn get" data-get>Get</button><span class="small muted">Open in ${d.platform === "ios" ? "Safari" : "Chrome"} first</span>`;
   if (d.platform === "ios") {
@@ -488,6 +499,7 @@ function ctaArea(data: LinkPage, d: Detected, name: string): Raw {
 
 // Shown instead of any version when nothing can be installed from this browser or release.
 function installArea(data: LinkPage, d: Detected, name: string, preview: boolean): Raw {
+  if (data.release && !hasDelivery(data)) return noDelivery();
   if (d.inApp && !d.inApp.installWorks) {
     const browser = d.platform === "ios" ? "Safari" : "Chrome";
     return callout("warn", html`
