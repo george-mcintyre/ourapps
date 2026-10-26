@@ -3,7 +3,7 @@ import { finishLogin, logout, logoutEverywhere, oauthConfigured, requireDevelope
 import { defaultDeps, type Deps, type Env } from "./env.js";
 import { randomId } from "./crypto.js";
 import { HttpError, json } from "./http.js";
-import { buildTargets, buildSigning, buildTestflight, buildUploadFileOperations, buildUploadFileStatus } from "./routes/build.js";
+import { buildTargets, buildSigning, buildTestflight, buildUploadFileOperations, buildUploadFileStatus, buildDistributionStatus } from "./routes/build.js";
 import { tickTestflight } from "./testflight.js";
 import * as dev from "./routes/dev.js";
 import { devPage, linkLatest, linkPage, linkQr, serveArtefact } from "./routes/public.js";
@@ -82,6 +82,7 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
   }
 
   if (p[0] === "build" && p.length === 3 && p[2] === "targets" && m === "GET") return buildTargets(request, env, p[1]);
+  if (p[0] === "build" && p.length === 5 && p[3] === "testflight" && p[4] === "distribution" && m === "GET") return buildDistributionStatus(request, env, deps, p[1], p[2]);
   if (p[0] === "build" && p.length === 3 && p[2] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1]);
   if (p[0] === "build" && p.length === 4 && p[3] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1], p[2]);
   if (p[0] === "build" && p.length === 7 && p[3] === "testflight" && p[4] === "upload" && p[6] === "status" && m === "GET") return buildUploadFileStatus(request, env, deps, p[1], p[2], p[5]);

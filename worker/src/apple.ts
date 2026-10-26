@@ -283,6 +283,27 @@ export class AppleClient {
     return { id: res.data.id, externalBuildState: res.data.attributes.externalBuildState ?? "UNKNOWN", autoNotifyEnabled: res.data.attributes.autoNotifyEnabled === true };
   }
 
+  async buildInBetaGroup(buildId: string, groupId: string): Promise<boolean | null> {
+    const res = await this.call<{ data: Resource[]; links?: { next?: string | null } }>("GET", `/v1/builds/${encodeURIComponent(buildId)}/betaGroups?limit=200`);
+    if (!Array.isArray(res.data) || res.data.length > 200 || res.data.some(group => group.type !== "betaGroups" || typeof group.id !== "string")) throw new AppleError(502, "Invalid Apple build groups response.");
+    if (res.data.some(group => group.id === groupId)) return true;
+    return res.links?.next ? null : false;
+  }
+
+  async betaGroupDistribution(groupId: string): Promise<{ isInternalGroup: boolean | null; publicLinkEnabled: boolean | null; publicLink: string | null; testerCount: number | null }> {
+    const id = encodeURIComponent(groupId);
+    const res = await this.call<{ data: Resource<{ isInternalGroup?: boolean; publicLinkEnabled?: boolean; publicLink?: string }> }>("GET", `/v1/betaGroups/${id}`);
+    if (res.data?.type !== "betaGroups" || res.data.id !== groupId || !res.data.attributes) throw new AppleError(502, "Invalid Apple testing group response.");
+    const testers = await this.call<{ data: Linkage[]; meta?: { paging?: { total?: number } }; links?: { next?: string | null } }>("GET", `/v1/betaGroups/${id}/relationships/betaTesters?limit=1`);
+    if (!Array.isArray(testers.data) || testers.data.length > 1 || testers.data.some(tester => tester.type !== "betaTesters" || typeof tester.id !== "string")) throw new AppleError(502, "Invalid Apple tester count response.");
+    const total = testers.meta?.paging?.total;
+    const testerCount = typeof total === "number" && Number.isSafeInteger(total) && total >= testers.data.length ? total : !testers.links?.next && total === undefined ? testers.data.length : null;
+    const a = res.data.attributes;
+    return { isInternalGroup: typeof a.isInternalGroup === "boolean" ? a.isInternalGroup : null,
+      publicLinkEnabled: typeof a.publicLinkEnabled === "boolean" ? a.publicLinkEnabled : null,
+      publicLink: typeof a.publicLink === "string" ? a.publicLink : null, testerCount };
+  }
+
   // Apple then makes the build available to its external groups as soon as beta review approves it.
   async setAutoNotify(betaDetailId: string): Promise<void> {
     await this.call("PATCH", `/v1/buildBetaDetails/${betaDetailId}`, { data: { type: "buildBetaDetails", id: betaDetailId, attributes: { autoNotifyEnabled: true } } });

@@ -68,9 +68,12 @@ POST /api/build/:app/:platform/testflight/upload
 POST /api/build/:app/:platform/testflight/commit
 POST /api/build/:app/:platform/testflight/reserve-build
 GET /api/build/:app/:platform/testflight/upload/:file/status
+GET /api/build/:app/:platform/testflight/distribution
 ```
 
 Existing build addresses are iOS-only aliases. Unknown platforms fail explicitly; they never use iOS credentials as a fallback. A TestFlight declaration offers no install action until its platform's invitation is ready. Direct Mac downloads use Developer ID signing and notarization; Mac TestFlight uses its own distribution signing path.
+
+For read-only approved-build diagnosis, GET `testflight/distribution` with the app's build token. It reads current external build state, notification setting, membership in the configured group and a tester count, without notifications or local state changes. Incomplete membership/count evidence is null. It returns no tester identities or secrets; exact fields are in agents.md. The saved notification timestamp does not establish that Apple accepted the notification.
 
 For a manually started Mac/TV workflow without a reserved build input, POST `reserve-build` exactly once inside the executing job with the app's bearer build token and no body. Its no-store response is `{ "version": "0.5.0", "buildNumber": "8" }`, both strings. The service resolves the validated manifest version and atomically reserves above verified Apple/local build numbers; it dispatches no workflow and exposes no signing material. Use both returned values for archive, export and upload. A dashboard-dispatched workflow already has reserved version/build inputs and must skip this endpoint. Do not run both paths for the same execution. iOS reservation is unsupported; missing platform setup returns 409, invalid token 401, incomplete reconciliation 502. Reservations are consumed even if the later export/upload fails.
 
