@@ -6,6 +6,7 @@
 - [Technical reference](https://ourapps.app/reference): supported app types, where every part runs, web app hosting on the developer's own Cloudflare account, engines and frameworks.
 - [Free services for small-audience apps](https://ourapps.app/free-tiers.md): video, realtime, databases, AI and more on free plans, with agent setup steps.
 - [Repository contract](https://ourapps.app/contract.md): what an app's GitHub repository must publish and the calls its workflow makes.
+- Target selection: six default-enabled switches (`ios`, `android`, `web`, `macos`, `windows`, `tvos`). Owners save one through `PUT /api/dev/apps/:id/targets/:target` with exactly `{enabled:boolean}`; workflows read `{targets:{six booleans}}` through `GET /api/build/:app/targets` with the app build token. Disabled targets leave shared install/update options and block new target work with 409 `Target is disabled.`; setup, artifacts and uploaded-build processing remain. Re-enable sends no build; normal scheduled expiry renewal resumes. Issued capabilities and existing Apple/hosted addresses remain usable. Exact scope and workflow rules: agents.md and contract.md.
 - Console: https://ourapps.app/dev (sign in with GitHub). API keys and agent prompts: https://ourapps.app/dev/agents.
 - Source: https://github.com/george-mcintyre/ourapps
 

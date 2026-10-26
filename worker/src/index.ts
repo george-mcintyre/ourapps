@@ -3,7 +3,7 @@ import { finishLogin, logout, logoutEverywhere, oauthConfigured, requireDevelope
 import { defaultDeps, type Deps, type Env } from "./env.js";
 import { randomId } from "./crypto.js";
 import { HttpError, json } from "./http.js";
-import { buildSigning, buildTestflight, buildUploadFileOperations, buildUploadFileStatus } from "./routes/build.js";
+import { buildTargets, buildSigning, buildTestflight, buildUploadFileOperations, buildUploadFileStatus } from "./routes/build.js";
 import { tickTestflight } from "./testflight.js";
 import * as dev from "./routes/dev.js";
 import { devPage, linkLatest, linkPage, linkQr, serveArtefact } from "./routes/public.js";
@@ -81,6 +81,7 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
     if (p[1] === "links" && p.length === 4 && p[3] === "latest" && m === "GET") return linkLatest(env, deps, p[2]);
   }
 
+  if (p[0] === "build" && p.length === 3 && p[2] === "targets" && m === "GET") return buildTargets(request, env, p[1]);
   if (p[0] === "build" && p.length === 3 && p[2] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1]);
   if (p[0] === "build" && p.length === 4 && p[3] === "signing" && (m === "GET" || m === "HEAD")) return buildSigning(request, env, p[1], p[2]);
   if (p[0] === "build" && p.length === 7 && p[3] === "testflight" && p[4] === "upload" && p[6] === "status" && m === "GET") return buildUploadFileStatus(request, env, deps, p[1], p[2], p[5]);
@@ -104,6 +105,7 @@ async function route(request: Request, env: Env, deps: Deps): Promise<Response> 
       if (p.length === 3 && m === "GET") return dev.getApp(env, me, p[2]);
       if (p.length === 3 && m === "PUT") return dev.updateApp(request, env, deps, me, p[2]);
       if (p.length === 3 && m === "DELETE") return dev.deleteApp(request, env, deps, me, p[2]);
+      if (p.length === 5 && p[3] === "targets" && m === "PUT") return dev.setTarget(request, env, me, p[2], p[4]);
       if (p.length === 4 && p[3] === "build-token" && m === "POST") return dev.rotateBuildToken(request, env, deps, me, p[2]);
       if (p.length === 4 && p[3] === "release" && m === "GET") return dev.releaseStatus(env, deps, me, p[2]);
       if (p.length === 4 && p[3] === "preview" && m === "GET") return dev.previewApp(env, deps, me, p[2]);

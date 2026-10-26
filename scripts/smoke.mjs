@@ -1,5 +1,6 @@
 // Live check of ourapps against a running deployment, the way an agent uses it.
 // Usage: OURAPPS_API_KEY=oa_... node scripts/smoke.mjs [--base https://ourapps.app]
+// Optional OURAPPS_READ_API_KEY checks that an owner's read-only key cannot save target selection.
 // Without a key only the public part runs. With a manage key it walks every endpoint agents.md
 // lists on a throwaway app, compares answers with the documented shapes, and deletes what it made.
 // It never calls endpoints that change anything at Apple or GitHub.
@@ -23,13 +24,13 @@ function record(ok, name, detail = "") {
 }
 
 // Records the call against the documented route pattern, then returns status, headers and parsed body.
-async function call(method, path, { body, auth = key, token, pattern } = {}) {
+async function call(method, path, { body, rawBody, auth = key, token, pattern } = {}) {
   exercised.add(`${method} ${pattern ?? path}`);
   const headers = { Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined || rawBody !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
   else if (auth) headers.Authorization = `Bearer ${auth}`;
-  const res = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
+  const res = await fetch(base + path, { method, headers, body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)), redirect: "manual" });
   const text = method === "HEAD" ? "" : await res.text();
   let json = null;
   try {
@@ -62,6 +63,71 @@ function documentedEndpoints() {
 function documentedAppFields() {
   const m = agentsMd.match(/App object: `\{ ([^}]+) \}`/);
   return m ? m[1].split(",").map((f) => f.trim()) : [];
+}
+
+const targetKeys = ["ios", "android", "web", "macos", "windows", "tvos"];
+const defaultTargets = Object.fromEntries(targetKeys.map((target) => [target, true]));
+
+function expectTargets(name, res, expected) {
+  expectStatus(name, res, 200);
+  const targets = res.json?.targets;
+  record(Object.keys(res.json ?? {}).length === 1 && targets !== null && typeof targets === "object"
+    && Object.keys(targets).length === targetKeys.length
+    && targetKeys.every((target) => typeof targets[target] === "boolean" && targets[target] === expected[target]), `${name} has exactly six expected booleans`);
+  record(res.headers.get("cache-control") === "no-store", `${name} is not cached`);
+}
+
+async function targetChecks(id, buildToken, app, detail, listed) {
+  const readPath = `/api/build/${id}/targets`;
+  const read = (options = {}) => call("GET", readPath, { token: buildToken, pattern: "/api/build/:app/targets", ...options });
+  const write = (target, options) => call("PUT", `/api/dev/apps/${id}/targets/${target}`, { pattern: "/api/dev/apps/:id/targets/:target", ...options });
+  for (const [name, value] of [["created app", app], ["app detail", detail], ["app list", listed]]) {
+    record(Object.keys(value?.targets ?? {}).length === 6 && targetKeys.every((target) => value?.targets?.[target] === true), `${name} defaults to six enabled targets`);
+  }
+  expectTargets("build-token target defaults", await read(), defaultTargets);
+  for (const [name, options] of [["missing token", { auth: "", token: "" }], ["invalid token", { token: "0".repeat(48) }], ["developer key", { token: "" }]]) {
+    expectStatus(`target read refuses ${name}`, await read(options), 401);
+  }
+  expectStatus("a build token cannot save targets", await write("tvos", { token: buildToken, body: { enabled: false } }), 401);
+  const readKey = process.env.OURAPPS_READ_API_KEY;
+  if (readKey) {
+    const identity = await call("GET", "/api/dev/me", { auth: readKey });
+    record(identity.status === 200 && identity.json?.scope === "read" && identity.json?.developer?.id === app.developerId, "optional read key belongs to the owner with read scope");
+    expectStatus("a read-only key cannot save targets", await write("tvos", { auth: readKey, body: { enabled: false } }), 403);
+  } else {
+    console.log("pending read-only target write check: set OURAPPS_READ_API_KEY to an owner read key");
+  }
+  const sibling = await call("POST", "/api/dev/apps", { body: { name: "Poker Night scope check", repo: "george-mcintyre/ourapps-smoke-test", showOnPage: false } });
+  expectStatus("create a second throwaway app for target token scope", sibling, 201);
+  if (sibling.json?.app?.id) {
+    const siblingId = sibling.json.app.id;
+    try {
+      record(typeof sibling.json.buildToken === "string" && sibling.json.buildToken.length > 0, "the scope-check app returns a build token");
+      expectStatus("target reads refuse another app's token", await read({ token: sibling.json.buildToken }), 401);
+      expectStatus("the target token cannot read another app", await call("GET", `/api/build/${siblingId}/targets`, { token: buildToken, pattern: "/api/build/:app/targets" }), 401);
+    } finally {
+      expectStatus("delete the scope-check app", await call("DELETE", `/api/dev/apps/${siblingId}`, { pattern: "/api/dev/apps/:id" }), 200);
+    }
+  }
+  for (const target of targetKeys) {
+    try {
+      const disabled = { ...defaultTargets, [target]: false };
+      expectTargets(`disable ${target}`, await write(target, { body: { enabled: false } }), disabled);
+      expectTargets(`repeat disable ${target}`, await write(target, { body: { enabled: false } }), disabled);
+      expectTargets(`read disabled ${target}`, await read(), disabled);
+    } finally {
+      expectTargets(`restore ${target}`, await write(target, { body: { enabled: true } }), defaultTargets);
+    }
+    expectTargets(`read restored ${target}`, await read(), defaultTargets);
+  }
+  const invalid = [undefined, null, [], true, {}, { enabled: "false" }, { enabled: 0 }, { enabled: null }, { enabled: false, extra: true }];
+  for (const body of invalid) {
+    expectStatus("target save refuses an invalid body", await write("tvos", { body }), 400);
+    expectTargets("invalid save preserves targets", await read(), defaultTargets);
+  }
+  expectStatus("target save refuses malformed JSON", await write("tvos", { rawBody: "{" }), 400);
+  expectStatus("target save refuses an unknown target", await write("unknown", { body: { enabled: false } }), 400);
+  expectTargets("rejected saves preserve targets", await read(), defaultTargets);
 }
 
 async function publicChecks() {
@@ -123,6 +189,9 @@ async function keyedChecks() {
     const got = await call("GET", P("/api/dev/apps/:id"), { pattern: "/api/dev/apps/:id" });
     expectStatus("GET /api/dev/apps/:id", got, 200);
     expectKeys("app detail shape", got.json, ["app", "links"]);
+    const targetList = await call("GET", "/api/dev/apps");
+    expectStatus("list the throwaway app's targets", targetList, 200);
+    await targetChecks(id, buildToken, app, got.json?.app, targetList.json?.apps?.find((item) => item.id === id));
 
     const bad = await call("PUT", P("/api/dev/apps/:id"), { body: { bundleId: "not a bundle id" }, pattern: "/api/dev/apps/:id" });
     expectStatus("a malformed bundle ID is refused", bad, 400);
@@ -170,6 +239,11 @@ async function keyedChecks() {
     const rotated = await call("POST", P("/api/dev/apps/:id/build-token"), { pattern: "/api/dev/apps/:id/build-token" });
     expectStatus("POST /api/dev/apps/:id/build-token", rotated, 200);
     const newToken = rotated.json?.buildToken;
+    record(typeof newToken === "string" && /^[a-f0-9]{48}$/.test(newToken), "rotation returns a build token");
+    const targetPath = `/api/build/${id}/targets`;
+    const targetPattern = "/api/build/:app/targets";
+    expectStatus("target reads refuse the rotated token", await call("GET", targetPath, { token: buildToken, pattern: targetPattern }), 401);
+    expectTargets("target reads accept the replacement token", await call("GET", targetPath, { token: newToken, pattern: targetPattern }), defaultTargets);
     const oldRefused = await call("GET", P("/api/build/:id/signing"), { token: buildToken, pattern: "/api/build/:id/signing" });
     expectStatus("the old build token stops working", oldRefused, 401);
     const signingHead = await call("HEAD", P("/api/build/:id/signing"), { token: newToken, pattern: "/api/build/:id/signing" });

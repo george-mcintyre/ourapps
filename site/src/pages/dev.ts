@@ -5,6 +5,7 @@ import { navigate } from "../nav.js";
 import { qrSvg, shareOrCopy } from "../qr.js";
 import { signingRequest } from "../signing.js";
 import { buildStatusCard, watchBuildStatus } from "../buildStatus.js";
+import { retainedTargetRelease, targetEnabled, targetSections, wireTargets } from "../targets.js";
 import { appIcon, callout, copyRow, copyText, emptyState, errorBox, fmtDate, icon, pill, statePill, toast, wireCopy, wireImages } from "../ui.js";
 import { AGENT_REPO_PROMPT, AGENT_STORE_PROMPT } from "./prompts.js";
 import { SOURCE_URL } from "./public.js";
@@ -225,7 +226,7 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
     me,
     isNew ? "New app" : app.name ?? "App",
     html`
-      ${!isNew ? html`<div id="release-card">${releaseCardSkeleton()}</div><div id="testflight-card"></div><div id="macos-testflight-card"></div><div id="tvos-testflight-card"></div>` : ""}
+      ${!isNew ? html`<div id="release-card">${releaseCardSkeleton()}</div>${targetSections(app)}` : ""}
       <form id="app-form" class="card mt">
         ${SECTIONS.map((s) => html`<div class="form-section"><div class="about"><h3>${s.title}</h3><p>${s.about}</p></div><div>${s.fields.map(field)}</div></div>`)}
         <div class="form-section">
@@ -303,7 +304,10 @@ export async function appForm(root: HTMLElement, appId: string | null): Promise<
     navigate("/dev/apps");
   });
 
-  if (appId) void loadTestflightCard(root, me, app as DevApp);
+  if (appId) {
+    wireTargets(root, app as DevApp);
+    void loadTestflightCard(root, me, app as DevApp);
+  }
   if (appId) for (const platform of ["macos", "tvos"] as const) void loadPlatformTestflightCard(root, app as DevApp, platform);
   if (appId) {
     const fresh = sessionStorage.getItem(`buildToken:${appId}`);
@@ -505,7 +509,7 @@ function testflightSteps(me: Me, app: DevApp, t: TestflightStatus, checking: boo
       done: false,
       doneText: "",
       about: "The App Store profile, the friends' group and its invitation link.",
-      todo: () => html`<p>${checking ? "Checking with Apple..." : "Nothing left for you to do; ourapps checks with Apple."} It makes the App Store profile and the friends' group with its invitation link, and gives Apple the beta review details.</p>${checking ? "" : html`<button class="btn sm mt-s" type="button" id="testflight-check">Check now</button>`}`,
+      todo: () => html`<p>${checking ? "Checking status..." : "Press Check now to finish setup with Apple."} Setup makes the App Store profile and the friends' group with its invitation link, and gives Apple the beta review details.</p>${checking ? "" : html`<button class="btn sm mt-s" type="button" id="testflight-check">Check now</button>`}`,
     },
   ];
   return html`
@@ -567,6 +571,8 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
     t = await api<TestflightStatus>("GET", path);
   } catch (err) {
     box.innerHTML = errorBox(err).html;
+    const retry = root.querySelector<HTMLButtonElement>('[data-target="ios"] [data-target-status]');
+    if (retry) retry.onclick = () => void loadTestflightCard(root, me, app);
     return;
   }
   let shown = "";
@@ -576,6 +582,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   let pollUntil = Date.now() + (t.setUp ? TF_CHECK_FOR_MS : TF_POLL_FOR_MS);
   // Runs one change at Apple or GitHub and shows the answer; the button shows it is busy meanwhile.
   const act = async (button: HTMLButtonElement, busyText: string, call: () => Promise<TestflightStatus>, done: string) => {
+    if (!targetEnabled(root, "ios")) return;
     button.disabled = true;
     button.textContent = busyText;
     try {
@@ -609,6 +616,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
     if (form) {
       form.onsubmit = async (e) => {
         e.preventDefault();
+        if (!targetEnabled(root, "ios")) return;
         const fd = new FormData(form);
         const contact = { firstName: String(fd.get("firstName") ?? ""), lastName: String(fd.get("lastName") ?? ""), email: String(fd.get("email") ?? ""), phone: String(fd.get("phone") ?? "") };
         const submit = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
@@ -659,7 +667,8 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
     }
     if (!t.setUp && t.needs === null) render(true);
     try {
-      t = await api<TestflightStatus>("POST", path);
+      if (byHand && !targetEnabled(root, "ios")) return;
+      t = await api<TestflightStatus>(byHand ? "POST" : "GET", path);
       render();
       if (t.setUp && !wasSetUp) toast("TestFlight is set up");
       else if (t.stage === "open" && wasStage !== "open") toast("The invitation is open: friends can install");
@@ -684,7 +693,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
       t = next;
       if (fresh) me = fresh;
       render();
-      if (!t.setUp && t.needs === null) await check(false);
+      schedule();
     } catch {
       // The next return to the page tries again.
     }
@@ -697,6 +706,8 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   }
 
   render();
+  const statusButton = root.querySelector<HTMLButtonElement>('[data-target="ios"] [data-target-status]');
+  if (statusButton) statusButton.onclick = () => void refresh();
   watchBuildStatus(box, path, next => {
     if (next.stage !== t.stage || next.needs !== t.needs || JSON.stringify(next.builds) !== JSON.stringify(t.builds)) {
       t = next;
@@ -706,9 +717,7 @@ async function loadTestflightCard(root: HTMLElement, me: Me, app: DevApp): Promi
   if (location.hash === "#testflight") box.scrollIntoView();
   addEventListener("focus", onFocus);
   document.addEventListener("visibilitychange", onFocus);
-  // A set-up app is checked with Apple once on opening, unless friends can already install it.
-  if ((!t.setUp && t.needs === null) || (t.setUp && t.stage !== "open")) await check(false);
-  else schedule();
+  schedule();
 }
 
 export function platformDeliveryStatus(app: DevApp, platform: "macos" | "tvos", t: TestflightStatus): Raw {
@@ -756,8 +765,12 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
   if (!box) return;
   const path = `/api/dev/apps/${app.id}/testflight/${platform}`;
   const render = (t: TestflightStatus) => {
+    const selectedType = box.querySelector<HTMLSelectElement>("[data-mac-build-type]")?.value;
     box.innerHTML = platformTestflightCard(app, platform, t).html;
+    const typeChoice = box.querySelector<HTMLSelectElement>("[data-mac-build-type]");
+    if (typeChoice && selectedType) typeChoice.value = selectedType;
     const act = async (button: HTMLButtonElement, suffix = "", repair = false) => {
+      if (!targetEnabled(root, platform)) return;
       box.querySelectorAll<HTMLButtonElement>("button").forEach(b => b.disabled = true);
       button.textContent = "Checking...";
       try {
@@ -780,6 +793,16 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
   };
   try {
     render(await api<TestflightStatus>("GET", path));
+    const statusButton = root.querySelector<HTMLButtonElement>(`[data-target="${platform}"] [data-target-status]`);
+    if (statusButton) statusButton.onclick = async () => {
+      try {
+        const next = await api<TestflightStatus>("GET", path);
+        const delivery = box.querySelector<HTMLElement>("[data-platform-delivery]");
+        if (delivery) delivery.innerHTML = platformDeliveryStatus(app, platform, next).html;
+        const builds = box.querySelector<HTMLElement>("[data-platform-builds]");
+        if (builds) builds.innerHTML = buildTable(next).html;
+      } catch (err) { showError(root, err, `#${platform}-testflight-card [data-platform-error]`); }
+    };
     watchBuildStatus(box, path, next => {
       const delivery = box.querySelector<HTMLElement>("[data-platform-delivery]");
       if (delivery) delivery.innerHTML = platformDeliveryStatus(app, platform, next).html;
@@ -787,7 +810,11 @@ async function loadPlatformTestflightCard(root: HTMLElement, app: DevApp, platfo
       if (builds) builds.innerHTML = buildTable(next).html;
     });
   }
-  catch (err) { box.innerHTML = errorBox(err).html; }
+  catch (err) {
+    box.innerHTML = errorBox(err).html;
+    const retry = root.querySelector<HTMLButtonElement>(`[data-target="${platform}"] [data-target-status]`);
+    if (retry) retry.onclick = () => void loadPlatformTestflightCard(root, app, platform);
+  }
 }
 
 function releaseCardSkeleton(): Raw {
@@ -801,9 +828,14 @@ async function loadReleaseCard(root: HTMLElement, appId: string, app: DevApp): P
     release = await api<ReleaseStatus>("GET", `/api/dev/apps/${appId}/release`);
   } catch (err) {
     box.innerHTML = errorBox(err).html;
+    root.querySelectorAll<HTMLElement>("[data-target-release]").forEach(summary => { summary.textContent = "Release information unavailable."; });
     return;
   }
   const r = release;
+  for (const target of ["android", "web", "macos", "windows"] as const) {
+    const summary = root.querySelector<HTMLElement>(`[data-target="${target}"] [data-target-release]`);
+    if (summary) summary.innerHTML = retainedTargetRelease(r, target).html;
+  }
   const platforms = r.install ? [r.install.ios ? "iPhone" : "", r.install.android ? "Android" : "", r.install.pwa ? "Web" : "", r.install.macos ? "Mac" : "", r.install.windows ? "Windows" : "", r.install.tvos ? "Apple TV" : ""].filter(Boolean).join(", ") : "";
   box.innerHTML = html`
     <div class="card">
@@ -1291,12 +1323,15 @@ export async function agents(root: HTMLElement): Promise<void> {
             <tr><td><code>GET /api/dev/me</code></td><td>who the key belongs to</td></tr>
             <tr><td><code>GET, POST /api/dev/apps</code></td><td>list, create (returns the build token once)</td></tr>
             <tr><td><code>GET, PUT, DELETE /api/dev/apps/:id</code></td><td>read with links, update, delete</td></tr>
+            <tr><td><code>PUT /api/dev/apps/:id/targets/:target</code></td><td>save exactly <code>{enabled:boolean}</code>; returns <code>{targets:AppTargets}</code>; app owner's browser session or manage key</td></tr>
             <tr><td><code>GET /api/dev/apps/:id/release</code></td><td>what the latest release looks like and why it fails</td></tr>
             <tr><td><code>POST /api/dev/apps/:id/links</code></td><td>new share link</td></tr>
             <tr><td><code>GET /api/public/links/:id/qr.svg</code></td><td>QR for a link</td></tr>
             <tr><td><code>GET, POST /api/dev/apps/:id/testflight</code></td><td>where TestFlight stands and the next step; set it up</td></tr>
             <tr><td><code>GET, POST /api/dev/apps/:id/testflight/:platform</code></td><td>separate Mac or Apple TV setup/status; Mac setup requires a browser session</td></tr>
+            <tr><td><code>GET /api/build/:app/targets</code></td><td>read <code>{targets:AppTargets}</code> using that app's build token as the bearer credential</td></tr>
           </table>
+          <p class="small muted"><code>AppTargets</code> contains six booleans: <code>ios</code>, <code>android</code>, <code>web</code>, <code>macos</code>, <code>windows</code> and <code>tvos</code>.</p>
           <pre class="mt-s"><code>curl -H "Authorization: Bearer $OURAPPS_API_KEY" \\
   ${location.origin}/api/dev/apps</code></pre>
           <p class="small muted mt-s">Source code and issues: <a href="${SOURCE_URL}" target="_blank" rel="noopener">github.com/george-mcintyre/ourapps</a>.</p>

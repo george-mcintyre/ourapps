@@ -35,7 +35,7 @@ function sections(origin: string, slug: string): Section[] {
         <ol class="steps">
           <li><b>Wait for Apple's beta review</b> of the first build of each new iPhone version. The app's TestFlight card says what it is waiting for.</li>
           <li><b>Send the share link</b> to the person. The agent can create it and give you the URL and QR code; the message to your friend is yours.</li>
-          <li><b>Before the signing certificate's yearly expiry</b> (the date is under <a href="/dev/settings#signing">Settings</a>), press <b>Replace certificate</b> there. ourapps makes the profile of every app on TestFlight again with it.</li>
+          <li><b>Before the signing certificate's yearly expiry</b> (the date is under <a href="/dev/settings#signing">Settings</a>), press <b>Replace certificate</b> there. ourapps makes the profiles of enabled TestFlight targets again with it.</li>
           <li><b>Approve the release notes</b> for each version in <code>CHANGELOG.md</code>. An agent drafts them from the commits; they are shown to your friends as the revision history, so the final words are yours. <a href="/dev/guide#release-notes">How</a>.</li>
         </ol>
         <h3>Everything else: hand it to an agent</h3>
@@ -123,7 +123,7 @@ function sections(origin: string, slug: string): Section[] {
           <li>The release workflow fetches certificate, key and profile with the app's build token from <code>/api/build/&lt;app&gt;/signing</code>, so the repository holds no Apple secrets. The <a href="/contract.md">contract</a> shows the exact commands.</li>
         </ol>
         ${callout("info", html`<p>TestFlight needs the app added once in App Store Connect; the app's page lists the exact values. See <a href="#testflight">step 6</a>.</p>`)}
-        <p class="small muted">The certificate lasts a year: press <b>Replace certificate</b> under Settings before then. ourapps makes the App Store profile of every app on TestFlight again with the new one, and the next build uses it. The old certificate stays valid until it expires or you revoke it in the developer portal.</p>
+        <p class="small muted">The certificate lasts a year: press <b>Replace certificate</b> under Settings before then. ourapps makes the App Store profiles of enabled TestFlight targets again with the new one, and the next build uses it. The old certificate stays valid until it expires or you revoke it in the developer portal.</p>
 
         <h3 id="cloudflare">Cloudflare account (web apps)</h3>
         <p>Web apps run from your own free Cloudflare account. Cloudflare serves plain files without a request limit or a charge, your repository's workflow deploys them, and ourapps only links to the address. ourapps never sees the token.</p>
@@ -173,6 +173,10 @@ base64 -i release.keystore | pbcopy   # paste as the secret ANDROID_KEYSTORE_BAS
         </ol>
         <p>Lost the token? Open the app and tap <b>New build token</b>; the old one stops working at once.</p>
         <p>Use <b>Preview install page</b> at any time to see exactly what a friend will see, with your current text and whatever the latest release provides.</p>
+        <h3>Choose targets</h3>
+        <p>The app page has a switch beside each heading: iPhone and iPad, Android, Web, Mac, Windows and Apple TV. All start enabled. Turn one off to remove its options from shared links, preview and update checks. Its section stays greyed with setup, release details and history retained. Mac controls both packages and Mac TestFlight; iPhone/iPad compatibility on Mac needs both switches enabled. Turning every target off keeps the listing and screenshots with no install options.</p>
+        <p>Disabled targets receive no new store-requested builds, signing material or upload operations. Already uploaded builds continue through Apple's processing and review. Turn a switch on to restore whichever retained options are available; this sends no build or setup request. Normal scheduled renewal before TestFlight expiry resumes while enabled.</p>
+        <p>Existing Apple invitations, hosted web addresses, downloaded signing material and issued upload/download links remain usable. Repository workflows must follow the <a href="/contract.md">target-selection contract</a> to skip disabled jobs and retain their published files during partial releases.</p>
       `,
     },
     {
@@ -330,7 +334,7 @@ startButton.onclick = async () => {
         <ul class="bullets">
           <li><b>Version numbers must go up:</b> Android <code>versionCode</code> and iOS <code>CFBundleVersion</code>, or the phone refuses the update as "older".</li>
           <li><b>Never change the Android signing key.</b> A different key means uninstall and reinstall, with data loss.</li>
-          <li><b>TestFlight builds expire</b> 90 days after upload. ourapps asks the repository for a fresh build two weeks before, so this needs nothing from you; the app's page shows each build's state.</li>
+          <li><b>TestFlight builds expire</b> 90 days after upload. While the target is enabled, ourapps asks the repository for a fresh build two weeks before; the app's page shows each build's state.</li>
           <li><b>Removing someone:</b> revoke their link. Installed copies keep working, apart from <code>web.zip</code> apps served at that link's address; TestFlight testers can be removed in App Store Connect. There is no remote uninstall, same as any app.</li>
         </ul>
 

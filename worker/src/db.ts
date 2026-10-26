@@ -1,5 +1,5 @@
 // Typed D1 access. Rows are snake_case in SQL and camelCase in code.
-import type { ScreenshotPlatform } from "@my/store-shared";
+import { APP_TARGET_KEYS, isAppTarget, type AppTarget, type AppTargets, type ScreenshotPlatform } from "@my/store-shared";
 import type { Env } from "./env.js";
 import type { ApplePlatform } from "./apple-platform.js";
 import { BuildNumberError, numericBuildNumber } from "./build-number.js";
@@ -62,6 +62,7 @@ export interface SigningCertificateRow {
 }
 
 export interface AppRow {
+  targets?: AppTargets;
   platform?: ApplePlatform;
   nativeMac?: boolean;
   id: string;
@@ -179,10 +180,11 @@ function row<T>(raw: Raw | null, convert: (r: Raw) => Raw = (r) => r): T | null 
 }
 
 const appConvert = (r: Raw): Raw => ({
-  ...r,
+  ...Object.fromEntries(Object.entries(r).filter(([key]) => !APP_TARGET_KEYS.some((target) => key === `target${target[0].toUpperCase()}${target.slice(1)}`))),
   screenshots: JSON.parse(r.screenshots as string),
   screenshotsByPlatform: JSON.parse((r.screenshotsByPlatform as string | undefined) ?? "{}"),
   showOnPage: r.showOnPage === 1,
+  targets: Object.fromEntries(APP_TARGET_KEYS.map((key) => [key, r[`target${key[0].toUpperCase()}${key.slice(1)}`] === 1])),
 });
 
 export class Db {
@@ -275,6 +277,18 @@ export class Db {
 
   async appById(id: string): Promise<AppRow | null> {
     return row<AppRow>(await this.d1.prepare("SELECT * FROM apps WHERE id = ?").bind(id).first(), appConvert);
+  }
+
+  async appTargets(id: string): Promise<AppTargets> {
+    const app = await this.appById(id);
+    if (!app?.targets) throw new Error("Could not read app targets.");
+    return app.targets;
+  }
+
+  async setAppTarget(id: string, target: AppTarget, enabled: boolean): Promise<AppTargets> {
+    if (!isAppTarget(target)) throw new Error("Unknown target.");
+    await this.d1.prepare(`UPDATE apps SET target_${target} = ? WHERE id = ?`).bind(enabled ? 1 : 0, id).run();
+    return this.appTargets(id);
   }
 
   async appsByDeveloper(developerId: string, onlyShown = false): Promise<AppRow[]> {
@@ -417,7 +431,7 @@ export class Db {
   async platformApp(app: AppRow, platform: ApplePlatform): Promise<AppRow> {
     if (platform === "ios") return { ...app, platform };
     const saved = await this.d1.prepare("SELECT state_json FROM app_testflight_platforms WHERE app_id = ? AND platform = ?").bind(app.id, platform).first<{ state_json: string }>();
-    return { ...app, ascAppId: null, betaGroupId: null, testflightUrl: null, storeProfileId: null, storeProfileUuid: null, storeProfileName: null, storeProfileBase64: null, testflightLinkState: null, testflightCheckedAt: null, buildRequestedAt: null, buildRequestError: null, nativeMac: false, ...(saved ? JSON.parse(saved.state_json) : {}), platform };
+    return { ...app, ascAppId: null, betaGroupId: null, testflightUrl: null, storeProfileId: null, storeProfileUuid: null, storeProfileName: null, storeProfileBase64: null, testflightLinkState: null, testflightCheckedAt: null, buildRequestedAt: null, buildRequestError: null, nativeMac: false, ...(saved ? JSON.parse(saved.state_json) : {}), targets: app.targets, platform };
   }
 
   async setLinkState(appId: string, state: LinkState | null, at: string): Promise<void> {
@@ -456,17 +470,22 @@ export class Db {
     return row<TestflightBuildRow>(await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND upload_file_id = ? AND platform = ?").bind(appId, fileId, platform).first());
   }
 
+  async setUploadFile(id: number, fileId: string): Promise<void> {
+    await this.d1.prepare("UPDATE testflight_builds SET upload_file_id = ? WHERE id = ?").bind(fileId, id).run();
+  }
+
   async testflightBuilds(appId: string, limit = 5, platform: ApplePlatform = "ios"): Promise<TestflightBuildRow[]> {
     const res = await this.d1.prepare("SELECT * FROM testflight_builds WHERE app_id = ? AND platform = ? ORDER BY id DESC LIMIT ?").bind(appId, platform, limit).all<Raw>();
     return res.results.map((r) => row<TestflightBuildRow>(r)!);
   }
 
-  async reserveBuildNumber(appId: string, platform: "macos" | "tvos", version: string, appleMaximum: number): Promise<number> {
+  async reserveBuildNumber(appId: string, platform: "macos" | "tvos", version: string, appleMaximum: number, check?: () => Promise<void>): Promise<number> {
     const local = await this.d1.prepare("SELECT MAX(CAST(build_number AS INTEGER)) AS maximum, SUM(CASE WHEN build_number = '' OR build_number GLOB '*[^0-9]*' THEN 1 ELSE 0 END) AS invalid FROM testflight_builds WHERE app_id = ? AND platform = ? AND version = ?")
       .bind(appId, platform, version).first<{ maximum: number | null; invalid: number | null }>();
     if (local?.invalid) throw new BuildNumberError("A local Apple build number is not an integer; an automatic build number cannot be reserved.");
     const seed = Math.max(numericBuildNumber(String(appleMaximum)), numericBuildNumber(String(local?.maximum ?? 0)));
     if (seed >= Number.MAX_SAFE_INTEGER) throw new BuildNumberError("The Apple build number range is exhausted; an automatic build number cannot be reserved.");
+    await check?.();
     const reserved = await this.d1.prepare("INSERT INTO build_number_reservations (app_id, platform, version, counter) VALUES (?, ?, ?, ?) ON CONFLICT (app_id, platform, version) DO UPDATE SET counter = MAX(build_number_reservations.counter + 1, excluded.counter) WHERE build_number_reservations.counter < 9007199254740991 RETURNING counter")
       .bind(appId, platform, version, seed + 1).first<{ counter: number }>();
     if (!reserved || !Number.isSafeInteger(reserved.counter)) throw new BuildNumberError("The Apple build number range is exhausted; an automatic build number cannot be reserved.");

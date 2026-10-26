@@ -11,6 +11,7 @@ import { profileType } from "./apple-platform.js";
 import { signingRequest } from "./signing.js";
 import { loadManifest } from "./upstream.js";
 import { BuildNumberError } from "./build-number.js";
+import { requireTarget, TargetDisabledError } from "./targets.js";
 
 export const BETA_GROUP = "Friends (ourapps)";
 // A build stops working 90 days after upload; a new one is asked for this long before.
@@ -53,6 +54,8 @@ export function storeAppForm(app: AppRow, dev: Developer): { name: string; other
 // Everything ourapps can do for TestFlight. Returns the next step only the developer can take, or null
 // once the App Store profile, the friends' group and its public link exist.
 export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app: AppRow): Promise<TestflightNeed | null> {
+  const check = () => requireTarget(env, app);
+  await check();
   const need = await localNeed(env, dev, app);
   if (need) return need;
   const db = Db.from(env);
@@ -60,16 +63,17 @@ export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app:
   const certificate = (await db.signingCertificate(dev.id))!;
   const apple = appleClient(env, deps, await loadSecrets(env, dev.id, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   try {
-    if (app.platform === "macos") await ensureInstallerSigning(env, deps, dev.id, apple);
+    if (app.platform === "macos") await ensureInstallerSigning(env, deps, dev.id, apple, check);
     // Registered first, so the bundle ID is in App Store Connect's list when the developer adds the app.
-    const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac);
+    const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac, check);
     const store = await apple.findStoreApp(app.bundleId);
     if (!store) return "store-app";
     const name = platformProfileName(app);
-    const profile = await apple.ensureStoreProfile(name, bundleRes, certificate.certificateId, profileType(app.platform ?? "ios", app.nativeMac));
-    const group = await apple.ensureBetaGroup(store.id, app.platform && app.platform !== "ios" ? `${BETA_GROUP} ${app.platform}` : BETA_GROUP);
-    await apple.setBetaReviewDetails(store.id, contact, "Shared privately with friends and family through ourapps.app. No sign-in is needed to use the app.");
-    await apple.setBetaDescription(store.id, { description: app.description || app.tagline || app.name, feedbackEmail: contact.email });
+    const profile = await apple.ensureStoreProfile(name, bundleRes, certificate.certificateId, profileType(app.platform ?? "ios", app.nativeMac), check);
+    const group = await apple.ensureBetaGroup(store.id, app.platform && app.platform !== "ios" ? `${BETA_GROUP} ${app.platform}` : BETA_GROUP, check);
+    await apple.setBetaReviewDetails(store.id, contact, "Shared privately with friends and family through ourapps.app. No sign-in is needed to use the app.", check);
+    await apple.setBetaDescription(store.id, { description: app.description || app.tagline || app.name, feedbackEmail: contact.email }, check);
+    await check();
     Object.assign(app, {
       ascAppId: store.id,
       betaGroupId: group.id,
@@ -89,7 +93,7 @@ export async function setUpTestflight(env: Env, deps: Deps, dev: Developer, app:
 
 const platformProfileName = (app: AppRow) => app.platform && app.platform !== "ios" ? `${storeProfileName(app.name)} ${app.platform}${app.nativeMac ? " native" : ""}` : storeProfileName(app.name);
 
-export async function ensureInstallerSigning(env: Env, deps: Deps, developerId: string, apple: AppleClient): Promise<void> {
+export async function ensureInstallerSigning(env: Env, deps: Deps, developerId: string, apple: AppleClient, check?: () => Promise<void>): Promise<void> {
   const db = Db.from(env);
   const certificate = await db.signingCertificate(developerId, true);
   const summary = await secretsSummary(env, developerId);
@@ -98,22 +102,27 @@ export async function ensureInstallerSigning(env: Env, deps: Deps, developerId: 
   const secrets = await loadSecrets(env, developerId);
   secrets.installerSigningKey = generated.privateKey;
   secrets.savedAt = { ...secrets.savedAt, installerSigningKey: deps.now().toISOString() };
-  const made = await apple.createDistributionCertificate(generated.csr, "MAC_INSTALLER_DISTRIBUTION");
+  const made = await apple.createDistributionCertificate(generated.csr, "MAC_INSTALLER_DISTRIBUTION", check);
   await saveSecrets(env, developerId, secrets, deps.now());
   await db.putSigningCertificate({ developerId, certificateId: made.id, name: made.name, serialNumber: made.serialNumber, certificateBase64: made.certificateContent, expirationDate: made.expirationDate, createdAt: deps.now().toISOString() }, true);
 }
 
 // After a new certificate, an app already on TestFlight gets its App Store profile made again with it.
 export async function renewStoreProfile(env: Env, apple: AppleClient, app: AppRow, certificateId: string): Promise<void> {
-  const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac);
+  const check = () => requireTarget(env, app);
+  await check();
+  const bundleRes = await apple.ensureBundleId(app.bundleId, app.name, app.platform === "macos" && app.nativeMac, check);
   const name = platformProfileName(app);
-  const profile = await apple.ensureStoreProfile(name, bundleRes, certificateId, profileType(app.platform ?? "ios", app.nativeMac));
+  const profile = await apple.ensureStoreProfile(name, bundleRes, certificateId, profileType(app.platform ?? "ios", app.nativeMac), check);
+  await check();
   Object.assign(app, { storeProfileId: profile.id, storeProfileUuid: profile.uuid, storeProfileName: name, storeProfileBase64: profile.profileContent });
   await Db.from(env).setAppTestflight(app);
 }
 
 // The workflow's upload: ourapps reserves it at Apple and returns where to send the bytes.
 export async function reserveUpload(env: Env, deps: Deps, app: AppRow, body: { version?: unknown; buildNumber?: unknown; fileName?: unknown; fileSize?: unknown; whatsNew?: unknown }) {
+  const check = () => requireTarget(env, app);
+  await check();
   if (!app.ascAppId) throw new HttpError(409, "TestFlight is not set up for this app; the developer sets it up on the app's page in ourapps");
   const version = typeof body.version === "string" ? body.version.trim() : "";
   const buildNumber = typeof body.buildNumber === "string" ? body.buildNumber.trim() : "";
@@ -123,30 +132,29 @@ export async function reserveUpload(env: Env, deps: Deps, app: AppRow, body: { v
   if (!version || !buildNumber || !fileName || !fileSize) throw new HttpError(400, `version, buildNumber, fileName (${extension}) and fileSize are required`);
   const apple = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   let reserved: Awaited<ReturnType<AppleClient["reserveBuildUpload"]>>;
+  let recordId: number | undefined;
+  const record = async (uploadId: string, fileId: string | null) => {
+    const db = Db.from(env);
+    if (recordId !== undefined) {
+      if (fileId) await db.setUploadFile(recordId, fileId);
+      return;
+    }
+    const now = deps.now().toISOString();
+    recordId = await db.insertTestflightBuild({ appId: app.id, platform: app.platform ?? "ios", version, buildNumber, uploadId, uploadFileId: fileId, buildId: null, whatsNew: typeof body.whatsNew === "string" ? body.whatsNew.slice(0, 4000) : null, state: "uploading", message: null, createdAt: now, updatedAt: now });
+  };
   try {
-    reserved = await apple.reserveBuildUpload(app.ascAppId, version, buildNumber, fileName, fileSize, app.platform ?? "ios");
+    reserved = await apple.reserveBuildUpload(app.ascAppId, version, buildNumber, fileName, fileSize, app.platform ?? "ios", check, record);
   } catch (err) {
+    if (err instanceof HttpError) throw err;
     throw new HttpError(502, err instanceof Error ? err.message : String(err));
   }
-  const now = deps.now().toISOString();
-  await Db.from(env).insertTestflightBuild({
-    appId: app.id,
-    platform: app.platform ?? "ios",
-    version,
-    buildNumber,
-    uploadId: reserved.uploadId,
-    uploadFileId: reserved.fileId,
-    buildId: null,
-    whatsNew: typeof body.whatsNew === "string" ? body.whatsNew.slice(0, 4000) : null,
-    state: "uploading",
-    message: null,
-    createdAt: now,
-    updatedAt: now,
-  });
+  await check();
   return { uploadFileId: reserved.fileId, operations: reserved.operations };
 }
 
 export async function commitUpload(env: Env, deps: Deps, app: AppRow, body: { uploadFileId?: unknown; md5?: unknown }) {
+  const check = () => requireTarget(env, app);
+  await check();
   const fileId = typeof body.uploadFileId === "string" ? body.uploadFileId : "";
   const md5 = typeof body.md5 === "string" && /^[0-9a-f]{32}$/i.test(body.md5) ? body.md5.toLowerCase() : "";
   if (!fileId || !md5) throw new HttpError(400, "uploadFileId and md5 (32 hex characters) are required");
@@ -155,8 +163,9 @@ export async function commitUpload(env: Env, deps: Deps, app: AppRow, body: { up
   if (!row) throw new HttpError(404, "no upload with that id for this app");
   const apple = appleClient(env, deps, await loadSecrets(env, app.developerId, ["appleIssuerId", "appleKeyId", "applePrivateKey"]));
   try {
-    await apple.commitBuildUpload(fileId, md5);
+    await apple.commitBuildUpload(fileId, md5, check);
   } catch (err) {
+    if (err instanceof TargetDisabledError) throw err;
     row.state = "failed";
     row.message = err instanceof Error ? err.message : String(err);
     row.updatedAt = deps.now().toISOString();
@@ -318,6 +327,8 @@ export interface PlatformBuildReservation {
 }
 
 export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow, metadata?: BuildRunMetadata): Promise<PlatformBuildReservation> {
+  const check = () => requireTarget(env, app);
+  await check();
   if (app.platform !== "macos" && app.platform !== "tvos") throw new HttpError(400, "Build-number reservation supports macos and tvos only; ios reservation is unsupported.");
   if (!app.ascAppId) throw new HttpError(409, "Set up TestFlight for this platform before reserving a build number.");
   let secrets: DeveloperSecrets;
@@ -330,8 +341,9 @@ export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow, me
     verified = await verifyBuildRun(env, deps, app, secrets.githubToken, metadata);
     try {
       const existing = await db.buildRunReservation(app.id, app.platform, app.repo, metadata);
+      await check();
       if (existing) return { version: existing.version, buildNumber: existing.buildNumber };
-    } catch { throw new HttpError(502, "Could not read the verified build reservation. Retry with the same runId and runAttempt."); }
+    } catch (err) { if (err instanceof TargetDisabledError) throw err; throw new HttpError(502, "Could not read the verified build reservation. Retry with the same runId and runAttempt."); }
   }
   let version: string;
   const manifestDeps: Deps = { ...deps, fetch: (input, init) => fetchBuildManifest(deps.fetch, input instanceof Request ? input.url : String(input), init?.headers) };
@@ -345,19 +357,25 @@ export async function reservePlatformBuild(env: Env, deps: Deps, app: AppRow, me
     throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not verify all existing Apple build numbers for this app, platform and version. Check the saved App Store Connect key has access to this app and permission to read builds, then retry. No workflow was requested; incomplete or excessive pagination also blocks allocation.");
   }
   try {
-    const buildNumber = await db.reserveBuildNumber(app.id, app.platform, version, appleMaximum);
+    await check();
+    const buildNumber = await db.reserveBuildNumber(app.id, app.platform, version, appleMaximum, check);
     if (verified) {
       const saved = await db.associateBuildRun(app.id, app.platform, version, String(buildNumber), verified, deps.now().toISOString());
+      await check();
       return { version: saved.version, buildNumber: saved.buildNumber };
     }
+    await check();
     return { version, buildNumber: String(buildNumber) };
   } catch (err) {
+    if (err instanceof TargetDisabledError) throw err;
     throw new HttpError(502, err instanceof BuildNumberError ? err.message : "Could not atomically reserve an Apple build number. Retry after checking the build reservation database is available.");
   }
 }
 
 // Requests the platform's workflow using one reserved input and keeps the dispatch outcome on the app.
 export async function requestBuild(env: Env, deps: Deps, app: AppRow, reason: string): Promise<void> {
+  const check = () => requireTarget(env, app);
+  await check();
   const at = deps.now().toISOString();
   let error: string | null = null;
   try {
@@ -365,11 +383,12 @@ export async function requestBuild(env: Env, deps: Deps, app: AppRow, reason: st
     if (app.platform === "macos" || app.platform === "tvos") {
       if (!secrets.githubToken) throw new GithubBuildRequestError("Save a GitHub token with repository access, Contents: read and Actions: write in account settings to request Mac or Apple TV builds.");
       const reservation = await reservePlatformBuild(env, deps, app);
-      await dispatchAppleWorkflow(env, deps, secrets.githubToken, app.repo, app.platform, reservation.version, Number(reservation.buildNumber));
+      await dispatchAppleWorkflow(env, deps, secrets.githubToken, app.repo, app.platform, reservation.version, Number(reservation.buildNumber), check);
     } else {
-      await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason });
+      await dispatchEvent(env, deps, secrets.githubToken, app.repo, RELEASE_EVENT, { app: app.id, reason }, check);
     }
   } catch (err) {
+    if (err instanceof TargetDisabledError) throw err;
     error = app.platform === "macos" || app.platform === "tvos"
       ? err instanceof GithubBuildRequestError || err instanceof HttpError ? err.message : "Could not request the Apple platform build. Check the repository, latest manifest, and GitHub token with Contents: read and Actions: write in account settings."
       : err instanceof Error ? err.message : String(err);
@@ -444,6 +463,7 @@ export async function tickTestflight(env: Env, deps: Deps): Promise<void> {
       await checkLink(env, deps, apple, app);
       await refreshIfExpiring(env, deps, db, apple, app);
     } catch (err) {
+      if (err instanceof TargetDisabledError) continue;
       console.error(`testflight ${app.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -451,6 +471,7 @@ export async function tickTestflight(env: Env, deps: Deps): Promise<void> {
 
 // The first build is asked for when TestFlight is set up, or from the app's page; this keeps it alive.
 async function refreshIfExpiring(env: Env, deps: Deps, db: Db, apple: AppleClient, app: AppRow): Promise<void> {
+  await requireTarget(env, app);
   const now = deps.now().getTime();
   const week = 7 * 86_400_000;
   if (app.buildRequestedAt && now - Date.parse(app.buildRequestedAt) < week) return;

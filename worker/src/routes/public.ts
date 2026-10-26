@@ -4,7 +4,7 @@ import { renderSVG } from "uqr";
 import { Db, type AppRow, type Developer, type LinkRow } from "../db.js";
 import { downloadDisposition } from "../download-filename.js";
 import type { Deps, Env } from "../env.js";
-import { appleClient, dlUrl, signManifestLinks } from "../flow.js";
+import { appleClient, deliveryRevision, dlUrl, projectDelivery, signManifestLinks } from "../flow.js";
 import { loadHistory } from "../history.js";
 import { HttpError, json } from "../http.js";
 import { verifyLink } from "../links.js";
@@ -87,26 +87,40 @@ export async function devPage(env: Env, slug: string): Promise<Response> {
 
 // Everything an install page needs; shared by share links and the dashboard preview.
 export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Developer, linkId: string | null) {
-  const apple = await appleReadiness(env, deps, app);
+  let apple = await appleReadiness(env, deps, app);
   const secrets = await loadSecrets(env, dev.id, ["githubToken"]);
   const historyPromise = loadHistory(env, deps, app, secrets.githubToken);
   // Private release assets need the token; the browser gets signed links instead.
   const sign = async (u: string) => (u && new URL(u).host === "api.github.com" ? dlUrl(env, deps, { url: u, kind: "icon", dev: dev.id }) : u);
   const signAll = (list: string[]) => Promise.all(list.map(sign));
   let manifest = null;
+  let revisionManifest = null;
+  let source = null;
+  let release = null;
   let manifestError: string | null = null;
   try {
-    const release = await resolveRelease(env, deps, app, secrets.githubToken);
-    manifest = await signManifestLinks(env, deps, dev.id, await loadManifest(env, deps, app, secrets.githubToken));
-    if (!manifest.install.ios) apple.ios = apple.iosOnMac = null;
-    if (!manifest.install.macos?.testflight) apple.macos = null;
-    if (!manifest.install.tvos) apple.tvos = null;
-    if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = linkId ? webAppUrl(env, linkId) : null;
-    if (manifest.install.ios && app.ascAppId) manifest.install.ios.testflight = apple.ios?.testflightUrl ?? null;
-    manifest.icon = await sign(manifest.icon);
-    manifest.screenshots = await signAll(manifest.screenshots ?? []);
+    release = await resolveRelease(env, deps, app, secrets.githubToken);
+    source = await loadManifest(env, deps, app, secrets.githubToken);
   } catch (err) {
     manifestError = err instanceof Error ? err.message : String(err);
+  }
+  const targets = await Db.from(env).appTargets(app.id);
+  if (source) {
+    const projected = projectDelivery(source, apple, targets);
+    apple = projected.apple;
+    revisionManifest = projected.manifest;
+    try {
+      manifest = await signManifestLinks(env, deps, dev.id, projected.manifest);
+      if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = linkId ? webAppUrl(env, linkId) : null;
+      if (manifest.install.ios && app.ascAppId) manifest.install.ios.testflight = apple.ios?.testflightUrl ?? null;
+      manifest.icon = await sign(manifest.icon);
+      manifest.screenshots = await signAll(manifest.screenshots ?? []);
+    } catch (err) {
+      manifest = null;
+      manifestError = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    apple = { ios: null, macos: null, tvos: null, iosOnMac: null };
   }
   // Dashboard lists win over my-app.json lists; the page picks per platform (see pickScreenshots).
   const screenshots: ScreenshotSets = { all: app.screenshots.length > 0 ? await signAll(app.screenshots) : (manifest?.screenshots ?? []) };
@@ -117,6 +131,7 @@ export async function buildLinkPage(env: Env, deps: Deps, app: AppRow, dev: Deve
     else if (fromRelease.length > 0) screenshots[p] = await signAll(fromRelease);
   }
   return {
+    deliveryRevision: await deliveryRevision(revisionManifest, apple),
     linkId,
     developer: { id: dev.id, slug: dev.slug, displayName: dev.displayName },
     app: { ...appDetails(app), iconUrl: await sign(app.iconUrl) },
@@ -162,24 +177,25 @@ export async function linkPage(env: Env, deps: Deps, linkId: string): Promise<Re
 // GET /api/public/links/:id/latest - what an installed app polls to offer an update.
 export async function linkLatest(env: Env, deps: Deps, linkId: string): Promise<Response> {
   const { app, dev } = await activeLink(env, deps, linkId);
-  const apple = await appleReadiness(env, deps, app);
+  let apple = await appleReadiness(env, deps, app);
   const secrets = await loadSecrets(env, dev.id, ["githubToken"]);
   let release: Awaited<ReturnType<typeof resolveRelease>>;
   let manifest: Awaited<ReturnType<typeof loadManifest>>;
   try {
     release = await resolveRelease(env, deps, app, secrets.githubToken);
-    manifest = await signManifestLinks(env, deps, dev.id, await loadManifest(env, deps, app, secrets.githubToken));
+    manifest = await loadManifest(env, deps, app, secrets.githubToken);
   } catch (err) {
     // The detail can name a private repository, so the update check only learns that no release is readable.
     console.error(`latest ${linkId}: ${err instanceof Error ? err.message : String(err)}`);
     throw new HttpError(503, "no release of this app is available right now");
   }
+  const projected = projectDelivery(manifest, apple, await Db.from(env).appTargets(app.id));
+  apple = projected.apple;
+  manifest = await signManifestLinks(env, deps, dev.id, projected.manifest);
   if (isBundleUrl(manifest.install.pwa, release)) manifest.install.pwa = webAppUrl(env, linkId);
   const ios = manifest.install.ios ? apple.ios : null;
-  if (!manifest.install.ios) apple.ios = apple.iosOnMac = null;
-  if (!manifest.install.macos?.testflight) apple.macos = null;
-  if (!manifest.install.tvos) apple.tvos = null;
   return json({
+    deliveryRevision: await deliveryRevision(projected.manifest, apple),
     name: app.name || manifest.name,
     version: manifest.version,
     // TestFlight installs and updates iPhone apps; an app can open this link.

@@ -1,4 +1,4 @@
-import type { AppleTarget, MacTarget, WindowsTarget, ScreenshotPlatform, ScreenshotSets } from "@my/store-shared";
+import type { AppTargets, AppleTarget, MacTarget, WindowsTarget, ScreenshotPlatform, ScreenshotSets } from "@my/store-shared";
 
 // Calls to the worker on the same origin.
 
@@ -37,6 +37,7 @@ export interface AppDetails {
 }
 
 export interface DevApp extends AppDetails {
+  targets?: AppTargets;
   repo: string;
   manifestUrl: string;
   bundleId: string;
@@ -82,6 +83,7 @@ export interface HistoryEntry {
 }
 
 export interface LinkPage {
+  deliveryRevision?: string;
   linkId: string | null;
   preview?: boolean;
   developer: { id: string; slug: string; displayName: string };

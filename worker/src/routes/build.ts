@@ -12,6 +12,15 @@ import { AppleError } from "../apple.js";
 import { appleClient } from "../flow.js";
 import { sanitiseUploadFile } from "../upload-diagnostic.js";
 import { uploadInteger, validateExistingUploadOperations } from "../upload-operations.js";
+import { requireTarget } from "../targets.js";
+
+export async function buildTargets(request: Request, env: Env, appId: string): Promise<Response> {
+  const db = Db.from(env);
+  const app = await db.appById(appId);
+  if (!app) throw new HttpError(404, "unknown app");
+  await requireBuildToken(request, env, app, false);
+  return json({ targets: await db.appTargets(app.id) });
+}
 
 // Verifies the per-app token; a token stored as a plain hash is rewritten as a keyed hash.
 async function requireBuildToken(request: Request, env: Env, app: AppRow, rehash = true): Promise<void> {
@@ -49,6 +58,7 @@ export async function buildUploadFileOperations(request: Request, env: Env, deps
   if (!app) throw new HttpError(404, "unknown app");
   await requireBuildToken(request, env, app, false);
   const platform = applePlatform(platformName);
+  await requireTarget(env, app, platform);
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(fileId)) throw new HttpError(404, "unknown upload file");
   const row = await db.testflightBuild(app.id, fileId, platform);
   if (!row) throw new HttpError(404, "unknown upload file");
@@ -69,6 +79,7 @@ export async function buildUploadFileOperations(request: Request, env: Env, deps
   const delivery = file.assetDeliveryState;
   if (!delivery || typeof delivery !== "object" || Array.isArray(delivery) || (delivery as Record<string, unknown>).state !== "AWAITING_UPLOAD" || (file.uploaded !== undefined && file.uploaded !== false) || uploadInteger(file.fileSize, 1) !== input.fileSize) throw new HttpError(409, "Apple upload state or file size does not match the request.");
   const operations = validateExistingUploadOperations(file.uploadOperations, input.fileSize);
+  await requireTarget(env, app, platform);
   return json({ platform, version: row.version, buildNumber: row.buildNumber, fileSize: input.fileSize, uploadFileId: fileId, operations });
 }
 
@@ -82,6 +93,7 @@ export async function buildSigning(request: Request, env: Env, appId: string, pl
   if (!base) throw new HttpError(404, "unknown app");
   const app = await db.platformApp(base, platform);
   await requireBuildToken(request, env, app);
+  await requireTarget(env, app);
   const certificate = await db.signingCertificate(app.developerId);
   if (!certificate) throw new HttpError(404, "iPhone signing is not set up; the developer sets it up under Settings in ourapps");
   if (!app.storeProfileBase64 || !app.storeProfileUuid) throw new HttpError(404, "TestFlight is not set up yet; the developer sets it up on the app's page in ourapps");
@@ -90,6 +102,7 @@ export async function buildSigning(request: Request, env: Env, appId: string, pl
   if (!secrets.signingKey) throw new HttpError(404, "the signing key is missing; set up iPhone signing again under Settings");
   if (platform === "macos" && (!installer || !secrets.installerSigningKey)) throw new HttpError(404, "Mac installer signing is not set up; run macos TestFlight setup");
   for (const cert of [certificate, installer]) if (cert?.expirationDate && Date.parse(cert.expirationDate) <= Date.now()) throw new HttpError(409, "signing certificate has expired; run signing setup again");
+  await requireTarget(env, app);
   if (request.method === "HEAD") return new Response(null, { status: 200, headers: { "Cache-Control": "no-store" } });
   return json({
     certificate: { id: certificate.certificateId, name: certificate.name, serialNumber: certificate.serialNumber, expirationDate: certificate.expirationDate, base64: certificate.certificateBase64 },
@@ -123,6 +136,7 @@ export async function buildTestflight(request: Request, env: Env, deps: Deps, ap
   if (!base) throw new HttpError(404, "unknown app");
   const app = await db.platformApp(base, platform);
   await requireBuildToken(request, env, app);
+  await requireTarget(env, app);
   if (step === "reserve-build") {
     const raw = await request.text();
     let metadata: unknown;
