@@ -3,7 +3,7 @@ import { ApiError, api, whoAmI, type AppDetails, type HistoryEntry, type Install
 import { html, mount, paragraphs, raw, type Raw } from "../html.js";
 import { navigate } from "../nav.js";
 import { notesHtml } from "../notes.js";
-import { desktopAvailability, desktopPanel, televisionPanel } from "../desktop.js";
+import { desktopAvailability, desktopPanel, televisionPanel, televisionSetupLink } from "../desktop.js";
 import { screenshotSvg } from "../placeholders.js";
 import { appleDeviceName, detectInAppBrowser, detectPlatform, type InAppBrowser, type Platform } from "../platform.js";
 import { qrSvg, shareOrCopy } from "../qr.js";
@@ -296,7 +296,7 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
             <h1>${name}</h1>
             <p class="tagline">${app.tagline || "Made for friends and family"}</p>
             <div class="dev">${data.developer.displayName}</div>
-            <div class="cta" id="cta">${ctaArea(data, d, name)}</div>
+            <div class="cta" id="cta">${ctaArea(data, d, name)}${televisionSetupLink(data.release, d.platform === "ios", blocked)}</div>
           </div>
         </header>
         <div class="facts-strip">${facts}</div>
@@ -309,7 +309,7 @@ export function renderInstall(root: HTMLElement, data: LinkPage, opts: InstallOp
             ? installArea(data, d, name, opts.preview === true)
             : shown.map((v) => html`<div ${tabbed ? html`role="tabpanel" id="panel-${v}" aria-labelledby="tab-${v}"` : ""} data-panel="${v ?? "none"}" ${tabbed && v !== current ? raw("hidden") : ""}>${installPanel(v, data, d, name, opts.pageUrl)}</div>`)
         }</div>
-        ${!blocked && (d.platform === "ios" || d.platform === "android") && data.release?.install.tvos ? televisionPanel(data.release, opts.pageUrl) : ""}
+        ${!blocked && (d.platform === "ios" || d.platform === "android") && data.release?.install.tvos ? televisionPanel(data.release, opts.pageUrl, d.platform === "ios") : ""}
 
         <section class="store-section">
           <h2>Preview</h2>

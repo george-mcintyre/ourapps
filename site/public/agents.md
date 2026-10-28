@@ -61,6 +61,8 @@ Mac downloads: open the .dmg, drag the app to Applications; quit and replace it 
 
 Apple TV public invitation: install TestFlight on iPhone or iPad and Apple TV with the same App Store account, accept the public invitation on iPhone or iPad, then install from TestFlight on Apple TV with the remote. Email invitations use Apple's redemption-code flow instead. Source and system requirements: https://testflight.apple.com/. Board/player modes belong to the app, not the manifest.
 
+iPhone/iPad share pages retain their phone install action and show Set up Apple TV when an enabled declared television target has a verified `apple.tvos` invitation. That shortcut leads to the separate TV section and TV-group invitation; it never uses the phone invitation. Missing/disabled targets are hidden; declared but unconfirmed targets show status without a working TV invitation. The app's `minOsVersion` and TestFlight's current tvOS18 minimum are stated separately.
+
 Apple records are separate for `ios`, `macos` and `tvos`, including signing, upload, review, invitation readiness and approved versions. Platform-specific addresses are `GET|HEAD /api/build/:app/:platform/signing` and `POST /api/build/:app/:platform/testflight/upload` or `/commit`. Existing addresses remain iOS-only aliases. Unknown platforms fail explicitly, never falling back to iOS credentials. Developer ID signing/notarization for direct Mac downloads and Mac TestFlight distribution signing are distinct paths.
 
 Full detail: https://ourapps.app/reference.
@@ -158,6 +160,8 @@ printf '%s' "$APP_ID" | gh secret set STORE_APP_ID --repo owner/name
 Never print the build token or put it in a file or a chat: it lets its holder fetch the developer's iPhone signing key. If it cannot be stored (no `gh`, no access, the repository does not exist yet), say so and drop it; once the repository is ready, `POST /api/dev/apps/:id/build-token` makes a new one to store.
 
 ## Release status
+
+An approved build can retain its recorded approval after a failed Apple lookup. A build message reporting that failure is not a fresh approval or availability confirmation; the console shows Availability unconfirmed. A successful approved-state read clears an older lookup error. This does not make BETA_APPROVED sufficient for an installation invitation.
 
 TestFlight status responses also include `buildStatus`: `state` is `not-started`, `requested`, `pending`, `running`, `complete`, `failed`, `cancelled` or `unavailable`. The object supplies `workflowName`, `runUrl`, `runNumber`, `runAttempt`, `conclusion`, `requestedAt`, `startedAt`, `checkedAt`, `elapsedSeconds`, `expectedSeconds`, `estimateSampleCount`, `progressPercent`, `correlation`, `platformVerified`, `reason` and `message`. A running estimate uses the median of up to five successful runs of the selected workflow, from run start to actual job completion. Without samples the estimate is null. Progress stays below 100 until GitHub reports success.
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopPackage } from "@my/store-shared";
 import type { Release, TestflightStatus } from "./api.js";
-import { desktopAvailability, desktopPanel, packageLabel, readyInvitation, televisionPanel } from "./desktop.js";
+import { desktopAvailability, desktopPanel, packageLabel, readyInvitation, televisionPanel, televisionSetupLink } from "./desktop.js";
 import { platformDeliveryStatus, platformTestflightCard } from "./pages/dev.js";
 import { availableViews, chooseView, shapeFor, showTabs } from "./views.js";
 
@@ -56,7 +56,7 @@ describe("desktop install choices", () => {
     const mac = desktopPanel(release, "macos", true).html;
     const tv = televisionPanel(release, "https://example.com/l/1").html;
     expect(mac).toContain("Mac TestFlight invitation unavailable");
-    expect(tv).toContain("Apple TV invitation unavailable");
+    expect(tv).toContain("Apple TV testing availability is unconfirmed");
     expect(mac + tv).not.toContain("/join/ios");
     const empty = desktopPanel({ ...release, install: { ...release.install, macos: { ...release.install.macos!, packages: [] } } }, "macos", true).html;
     expect(empty).toContain("No direct package available");
@@ -91,6 +91,35 @@ describe("desktop install choices", () => {
     expect(tv).toContain("same App Store account");
     expect(tv).toContain("/join/tv");
     expect(tv).not.toContain("/join/mac");
+  });
+
+  it("offers separate iPhone/iPad TV setup using only a ready TV target", () => {
+    const ready: Release = { ...release, install: { ...release.install, tvos: { bundleId: "a.b", minOsVersion: "17.0" } }, apple: { ...release.apple, tvos: { version: "2.7", testflightUrl: "https://testflight.apple.com/join/tv" } } };
+    expect(televisionSetupLink(ready, true).html).toContain('href="#apple-tv-setup"');
+    expect(televisionSetupLink(ready, true).html).toContain("Set up Apple TV");
+    const panel = televisionPanel(ready, "https://example.com/l/1", true).html;
+    expect(panel).toContain('id="apple-tv-setup"');
+    expect(panel).toContain('href="https://testflight.apple.com/join/tv"');
+    expect(panel).toContain("Accept Apple TV invitation");
+    expect(panel).toContain("same Apple Account for the App Store");
+    expect(panel).toContain("App minimum: tvOS 17.0");
+    expect(panel).toContain("Current TestFlight requires tvOS 18");
+    expect(panel).not.toContain("/join/ios");
+    expect(panel).not.toContain("/join/mac");
+    expect(televisionSetupLink(ready, false).html).toBe("");
+    expect(televisionSetupLink(ready, true, true).html).toBe("");
+  });
+
+  it("hides TV setup for absent/disabled targets and avoids working links while unavailable", () => {
+    const inconsistent: Release = { ...release, install: { ...release.install, tvos: null }, apple: { ...release.apple, tvos: { version: "2.7", testflightUrl: "https://testflight.apple.com/join/tv" } } };
+    expect(televisionSetupLink(inconsistent, true).html).toBe("");
+    expect(televisionPanel(inconsistent, "https://example.com/l/1", true).html).toBe("");
+    expect(televisionSetupLink(null, true).html).toBe("");
+    expect(televisionSetupLink(release, true).html).toBe("");
+    const waiting = televisionPanel(release, "https://example.com/l/1", true).html;
+    expect(waiting).toContain("testing availability is unconfirmed");
+    expect(waiting).not.toContain("/join/ios");
+    expect(waiting).not.toContain("Accept Apple TV invitation");
   });
 
   it("offers setup before packages or invitations exist", () => {
@@ -130,5 +159,16 @@ describe("desktop install choices", () => {
     const page = platformDeliveryStatus({ bundleId: "a.b" } as Parameters<typeof platformDeliveryStatus>[0], "tvos", status).html;
     expect(page).toContain("public invitation is not accepting testers");
     expect(page).toContain("Check the testing group&#39;s public link settings");
+  });
+
+  it.each(["macos", "tvos"] as const)("marks cached %s approval unconfirmed after a failed status check", platform => {
+    const status: TestflightStatus = { setUp: true, needs: null, storeApp: null, stage: "approved", url: "https://testflight.apple.com/join/example", invitation: { state: "open", checkedAt: null }, buildRequest: null, profile: "profile", contact: true,
+      builds: [{ version: "0.18.0", buildNumber: "1", state: "approved", appleState: "BETA_APPROVED", message: "Apple resource lookup failed", uploadedAt: "2026-10-26T13:00:00Z", submittedAt: null, expiresAt: null, updatedAt: "2026-10-28T13:00:00Z" }] };
+    const page = platformTestflightCard({ bundleId: "a.b" } as Parameters<typeof platformTestflightCard>[0], platform, status).html;
+    expect(page).toContain("Availability unconfirmed");
+    expect(page).toContain("latest Apple status check failed for version 0.18.0 (build 1)");
+    expect(page).toContain("Approval is the last recorded result");
+    expect(page).not.toContain("Approved, awaiting testing availability");
+    expect(page).not.toContain('href="https://testflight.apple.com/join/example"');
   });
 });
