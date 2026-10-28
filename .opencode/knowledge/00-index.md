@@ -32,6 +32,10 @@ from the latest GitHub Release and serves artefacts through signed one-hour link
 
 ## Where to change X
 
+- iPhone/iPad Apple TV discovery: `televisionSetupLink` and `televisionPanel` in `site/src/desktop.ts`, rendered by `site/src/pages/public.ts`, keep the phone install path and add a TV setup shortcut only for a declared target with matching ready invitation. Absent/disabled targets are hidden; unconfirmed targets have no working TV action. Current TestFlight tvOS18 requirement is separate from the app's declared minimum; source https://testflight.apple.com/ checked2026-10-28.
+
+- Approved-build error wording: `platformDeliveryStatus` in `site/src/pages/dev.ts` shows Availability unconfirmed when the latest approved build has a status-check error. `advanceBuild` in `worker/src/testflight.ts` clears stale errors after a successful approved-state read; neither change promotes approval to installable readiness.
+
 - Read-only Apple distribution diagnosis: `buildDistributionStatus` in `worker/src/routes/build.ts`, GET `/api/build/:app/:platform/testflight/distribution` with the app build token. Reads actual group membership, tester count and notification settings without identities/secrets or local/Apple writes; incomplete evidence is null. `worker/test/distribution-status.test.ts` covers ownership, disabled reads and no-rewrite guarantees.
 - Apple build membership is read through `/v1/betaGroups/{group}/relationships/builds`; the published Apple specification has no GET from a build to betaGroups, only POST/DELETE relationship operations in that direction. Check documented operations before attributing a403 to key roles.
 

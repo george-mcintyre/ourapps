@@ -41,10 +41,16 @@ export function desktopPanel(release: Release, platform: "macos" | "windows", ma
   </div>`;
 }
 
-export function televisionPanel(release: Release, pageUrl: string): Raw {
+export function televisionSetupLink(release: Release | null, onIos: boolean, blocked = false): Raw {
+  if (!onIos || blocked || !release?.install.tvos || !readyInvitation(release, "tvos")) return html``;
+  return html`<a class="btn secondary" href="#apple-tv-setup">Set up Apple TV</a>`;
+}
+
+export function televisionPanel(release: Release, pageUrl: string, onIos = false): Raw {
+  if (!release.install.tvos) return html``;
   const invite = readyInvitation(release, "tvos");
-  return html`<div class="install-card"><h3>Apple TV TestFlight</h3>
-    ${release.install.tvos ? html`<p class="small">Requires tvOS ${release.install.tvos.minOsVersion} or later, and a system supported by TestFlight.</p>` : ""}
-    ${invite ? html`<p class="small">TestFlight version ${invite.version}.</p><ol class="steps small"><li>Install TestFlight on your iPhone or iPad and Apple TV. Sign in to the same App Store account on both.</li><li>Open <a href="${pageUrl}">this install page</a> on the iPhone or iPad, open the Apple TV invitation below, then tap Accept.</li><li>Open TestFlight on Apple TV and install the app using the remote.</li></ol><a class="btn" href="${invite.testflightUrl}">Open Apple TV invitation on iPhone or iPad</a>` : html`<p class="muted">Apple TV invitation unavailable.</p>`}
+  return html`<div class="install-card" id="apple-tv-setup"><h3>Apple TV TestFlight</h3>
+    <p class="small">App minimum: tvOS ${release.install.tvos.minOsVersion} or later. Current TestFlight requires tvOS 18 or later.</p>
+    ${invite ? html`<p class="small">TestFlight version ${invite.version}.</p>${onIos ? html`<ol class="steps small"><li>Install TestFlight on this iPhone or iPad and on Apple TV. Use the same Apple Account for the App Store on both devices.</li><li>Open the Apple TV invitation below and tap Accept on this iPhone or iPad.</li><li>Open TestFlight on Apple TV and install the app using the remote.</li></ol>` : html`<ol class="steps small"><li>Install TestFlight on your iPhone or iPad and Apple TV. Sign in to the same App Store account on both.</li><li>Open <a href="${pageUrl}">this install page</a> on the iPhone or iPad, open the Apple TV invitation below, then tap Accept.</li><li>Open TestFlight on Apple TV and install the app using the remote.</li></ol>`}<a class="btn" href="${invite.testflightUrl}">${onIos ? "Accept Apple TV invitation" : "Open Apple TV invitation on iPhone or iPad"}</a>` : html`<p class="muted">Apple TV testing availability is unconfirmed.</p>`}
     <p class="small"><a href="${APPLE_TESTING_DOCS}">Apple's TestFlight instructions and system requirements</a></p></div>`;
 }

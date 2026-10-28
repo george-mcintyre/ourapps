@@ -743,6 +743,9 @@ export function platformDeliveryStatus(app: DevApp, platform: "macos" | "tvos", 
   if (!t.stage) return html`<p class="small">Enable ${name} TestFlight when your app supports this platform.</p>`;
   const latest = t.builds[0];
   const version = latest ? `version ${latest.version} (build ${latest.buildNumber})` : "the build";
+  if (t.stage === "approved" && latest?.message) {
+    return html`<p>${pill("Availability unconfirmed", "warn")}</p><p class="small muted">The latest Apple status check failed for ${version}. Approval is the last recorded result, not a current confirmation of testing availability. The failed lookup needs checking before another upload is requested.</p>`;
+  }
   const waiting = t.stage === "no-build" || t.stage === "waiting-for-upload";
   const messages: Record<TestflightStage, string> = {
     "no-build": `No ${name} build has been uploaded to ourapps.`,

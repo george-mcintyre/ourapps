@@ -230,6 +230,7 @@ export async function advanceBuild(apple: AppleClient, app: AppRow, row: Testfli
       break;
     case "BETA_APPROVED":
       row.state = "approved";
+      row.message = null;
       if (!row.notifiedAt) {
         try {
           await apple.notifyTesters(build.id);

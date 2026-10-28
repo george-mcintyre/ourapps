@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
 import { handle } from "../src/index.js";
-import { tickTestflight } from "../src/testflight.js";
-import { BASE, CSR, api, appleRoutes, clearDb, fakeFetch, githubRoutes, jsonRes, manifest, rsaPem, saveAppleSecrets, signIn, testDeps, testEnv, type Call, type TestDeps } from "./helpers.js";
+import { advanceBuild, tickTestflight } from "../src/testflight.js";
+import { AppleClient } from "../src/apple.js";
+import type { AppRow, TestflightBuildRow } from "../src/db.js";
+import { BASE, CSR, api, applePem, appleRoutes, clearDb, fakeFetch, githubRoutes, jsonRes, manifest, rsaPem, saveAppleSecrets, signIn, testDeps, testEnv, type Call, type TestDeps } from "./helpers.js";
 
 const apple = (p: string) => `api.appstoreconnect.apple.com${p}`;
 
@@ -95,6 +97,20 @@ async function readyApp(routes: ReturnType<typeof storeRoutes>) {
 }
 
 describe("TestFlight", () => {
+  it("clears an old lookup error when a fresh approved-build read succeeds", async () => {
+    const stub = fakeFetch(storeRoutes({ storeApp: true, build: { processingState: "VALID", usesNonExemptEncryption: false }, beta: "BETA_APPROVED", autoNotify: true }));
+    const d = { ...deps, fetch: stub.fetch };
+    const client = new AppleClient(env, d, { issuerId: "fixture", keyId: "fixture", privateKey: await applePem() });
+    const app = { id: "fixture", ascAppId: "asc-1", platform: "tvos", betaGroupId: "grp-1" } as AppRow;
+    const row: TestflightBuildRow = { id: 1, appId: app.id, platform: "tvos", version: "0.18.0", buildNumber: "1", buildId: "build-1", uploadId: null, uploadFileId: null, whatsNew: null,
+      state: "approved", appleState: "BETA_APPROVED", message: "Earlier Apple resource lookup failed", notifiedAt: deps.now().toISOString(), createdAt: deps.now().toISOString(), updatedAt: deps.now().toISOString() };
+    await advanceBuild(client, app, row, deps.now().toISOString());
+    expect(row.state).toBe("approved");
+    expect(row.appleState).toBe("BETA_APPROVED");
+    expect(row.message).toBeNull();
+    expect(stub.calls.every(call => call.method === "GET")).toBe(true);
+  });
+
   it("returns workflow status on both default and explicit platform views", async () => {
     const routes = storeRoutes({ storeApp: false });
     const { appId } = await readyApp(routes);
